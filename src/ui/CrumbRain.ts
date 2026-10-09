@@ -12,6 +12,18 @@ const GRAVITY = -160
 const TAU = Math.PI * 2
 const SLOTS = 10
 const POOL = 26
+// the cursor doesn't exist as a solid in the pile's world — it's a hand that shoves: crumbs it
+// touches take on its sideways speed, plus at most a small hop. Nothing can rest on it, nothing
+// can be carried up; gravity always wins
+const PUSH_R = 1.5 // reach from the cursor to a crumb's centre (a crumb is ~1.8 wide)
+const HOP_COOLDOWN = 450 // ms
+const PUSH_HOP = 130 // max upward launch speed
+const PUSH_GAIN = 6 // a hit sends a crumb flying far faster than the cursor hit it
+const PUSH_MIN = 75 // even a slow touch launches it
+const PUSH_MAX = 200 // speed cap (CCD keeps it inside the box)
+const PUSH_MAX_STEP = 2.2 // most the cursor body travels in one frame
+const BOX_DEPTH = 1.1 // the box's half-depth around the stage plane
+const BOX_INSET = 0.45 // side walls pulled in from the screen edge
 
 interface Proto {
   wrapper: THREE.Object3D
@@ -23,6 +35,8 @@ interface Item {
   body: RAPIER.RigidBody
   /** exit direction once the suck starts: -1 left, +1 right (assigned 50/50) */
   dir?: number
+  /** time of its last hop from the cursor: one hop, then it has to land (no juggling it up) */
+  hopAt?: number
 }
 
 /**
@@ -54,9 +68,22 @@ export class CrumbRain {
   private sucking = false
   private spawnIv = 0
   private suckFrames = 0
+  // the cursor as a body in the pile's world (opt-in: `push`)
+  private push: boolean
+  private pointer: THREE.Vector2 | null = null // screen uv (0..1, y up) or null = away
+  private pusherAt?: { x: number; y: number }
+  private aspect = 1
+  // with `push`: the screen is a closed box (sides, back, front, and a lid once the rain is
+  // over) so the cursor can't knock a crumb out of frame — only the scroll's suck takes them
+  private box: RAPIER.Collider[] = []
 
-  constructor(opts: { parent: THREE.Object3D; crumbScale?: number }) {
+  /** TEST (/hero-drawn.html): the crumbs' material, in place of the lit one */
+  private materialOverride?: (src: THREE.MeshStandardMaterial) => THREE.Material
+
+  constructor(opts: { parent: THREE.Object3D; crumbScale?: number; push?: boolean; material?: (src: THREE.MeshStandardMaterial) => THREE.Material }) {
+    this.materialOverride = opts.material
     this.crumbScale = opts.crumbScale ?? 1
+    this.push = !!opts.push
     opts.parent.add(this.stage)
 
     // one warm key at the threshold — short range so the room beyond stays dark;
@@ -95,11 +122,94 @@ export class CrumbRain {
       RAPIER.ColliderDesc.cuboid(200, 0.5, 200).setFriction(0.6).setRestitution(0),
     )
     this.floorC.setTranslation({ x: 0, y: -CRUMB_VIEW_H, z: 0 })
+
+    if (this.push) {
+      this.buildBox()
+    }
   }
+
+  private buildBox(withLid = false): void {
+    const world = this.world
+    if (!world) return
+    for (const c of this.box) world.removeCollider(c, false)
+    this.box = []
+    const W = this.halfW - BOX_INSET // inset: crumbs in front of the stage plane read wider (perspective)
+    const H = CRUMB_VIEW_H
+    const T = 0.5 // wall half-thickness
+    const add = (hx: number, hy: number, hz: number, x: number, y: number, z: number) => {
+      const c = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setFriction(0.5).setRestitution(0.7)) // bouncy box
+      c.setTranslation({ x, y, z })
+      this.box.push(c)
+    }
+    add(T, H * 3, 20, -W - T, 0, 0) // left edge of the screen
+    add(T, H * 3, 20, W + T, 0, 0) // right
+    add(W * 2, H * 3, T, 0, 0, -BOX_DEPTH - T) // back (don't sink behind the doors)
+    add(W * 2, H * 3, T, 0, 0, BOX_DEPTH + T) // front (don't come at the camera)
+    if (withLid) add(W * 2, T, 20, 0, H + T, 0) // top edge — only once nothing is falling in
+    this.lidded = withLid
+  }
+  private lidded = false
+
+  /** crumbs the cursor touches take on its motion: its sideways speed in full, its upward
+   *  speed only up to a small hop (it pushes, it never lifts) */
+  private shove(from: { x: number; y: number }, to: { x: number; y: number }, dt: number): void {
+    const h = Math.max(dt, 1 / 240)
+    const cvx = (to.x - from.x) / h
+    const cvy = (to.y - from.y) / h
+    if (Math.hypot(cvx, cvy) < 0.3) return
+    for (const it of this.items) {
+      const t = it.body.translation()
+      // distance from the cursor's path this frame, not just its end point, so a fast swipe
+      // can't skip over a crumb
+      const ax = to.x - from.x
+      const ay = to.y - from.y
+      const L2 = ax * ax + ay * ay
+      const u = L2 > 0 ? Math.min(Math.max(((t.x - from.x) * ax + (t.y - from.y) * ay) / L2, 0), 1) : 1
+      const d = Math.hypot(t.x - (from.x + ax * u), t.y - (from.y + ay * u))
+      if (d > PUSH_R || d < 1e-3) continue
+      // a contact, not a magnet: the crumb is only pushed along the line from the cursor to its
+      // centre, and only while the cursor is moving INTO it. A cursor already at (or past) its
+      // centre, or moving away, does nothing — so it can't drag a crumb around
+      const nx = (t.x - (from.x + ax * u)) / d
+      const ny = (t.y - (from.y + ay * u)) / d
+      const approach = cvx * nx + cvy * ny
+      if (approach <= 0) continue
+      const v = it.body.linvel()
+      const gap = approach - (v.x * nx + v.y * ny) // how much faster the cursor comes than it leaves
+      if (gap <= 0) continue
+      // exaggerated: the hit is amplified, with a floor so any touch sends it flying
+      const k = Math.min(Math.max(gap * PUSH_GAIN, PUSH_MIN), PUSH_MAX)
+      // always a strong lift on a hit: it flies up and over the pile in an arc, instead of
+      // ramming into its neighbours and stopping dead
+      const lift = Math.max(ny, 0.95)
+      const nvx = v.x + nx * k
+      // upward: a single hop, only from a crumb that isn't already rising, and not again until
+      // it has had time to come down — otherwise a slow upward drag would juggle it to the top
+      const now = performance.now()
+      let nvy = v.y + lift * k
+      if (nvy > v.y) {
+        if (v.y <= 0.5 && now - (it.hopAt ?? -1e9) > HOP_COOLDOWN) {
+          nvy = Math.min(nvy, PUSH_HOP)
+          it.hopAt = now
+        } else nvy = v.y
+      }
+      it.body.setLinvel({ x: nvx, y: nvy, z: v.z }, true)
+      const spin = 16 + k * 0.3 // and it tumbles
+      it.body.setAngvel({ x: (Math.random() - 0.5) * spin, y: (Math.random() - 0.5) * spin, z: -(nvx - v.x) * 0.3 }, true)
+    }
+  }
+
+  /** where the cursor is (screen uv, y up), or null when it's off the page / not pushing */
+  setPointer(uv: THREE.Vector2 | null): void {
+    this.pointer = uv ? (this.pointer ?? new THREE.Vector2()).copy(uv) : null
+  }
+
 
   /** call on viewport resize — only the horizontal spawn spread depends on aspect */
   layout(aspect: number): void {
+    this.aspect = aspect
     this.halfW = CRUMB_VIEW_H * aspect
+    if (this.push && !this.sucking) this.buildBox(this.lidded)
   }
 
   /** true until a suck is under way and still has crumbs on screen — the doors wait on this */
@@ -123,7 +233,7 @@ export class CrumbRain {
       const m = o as THREE.Mesh
       if (!m.isMesh) return
       const src = (Array.isArray(m.material) ? m.material[0] : m.material) as THREE.MeshStandardMaterial
-      m.material = new THREE.MeshLambertMaterial({ map: src.map ?? null, color: 0xffffff })
+      m.material = this.materialOverride?.(src) ?? new THREE.MeshLambertMaterial({ map: src.map ?? null, color: 0xffffff })
     })
 
     const br = Math.min(0.045, s.y * 0.35, s.z * 0.35, s.x * 0.35)
@@ -170,7 +280,11 @@ export class CrumbRain {
     this.spawnIv = window.setInterval(() => {
       if (this.sucking) return // suck already started; no more crumbs
       this.spawn(proto)
-      if (++n >= total) window.clearInterval(this.spawnIv)
+      if (++n >= total) {
+        window.clearInterval(this.spawnIv)
+        // close the lid once the last crumb has had time to fall in below it
+        if (this.push) window.setTimeout(() => !this.sucking && this.buildBox(true), 1200)
+      }
     }, 55)
   }
 
@@ -184,6 +298,9 @@ export class CrumbRain {
     this.sucking = true
     if (this.spawnIv) window.clearInterval(this.spawnIv)
     if (this.world && this.floorC) this.world.removeCollider(this.floorC, false)
+    // the box opens: the suck is the only way out
+    if (this.world) for (const c of this.box) this.world.removeCollider(c, false)
+    this.box = []
 
     // split the current crumbs 50/50 by x so the pile parts down the middle
     const sorted = [...this.items].sort(
@@ -233,12 +350,27 @@ export class CrumbRain {
     if (this.sucking) this.pullAside()
 
     this.acc = Math.min(this.acc + dt, world.timestep * 3)
+    // the cursor, in this world's units (the stage maps the screen 1:1 at z = 0); capped per
+    // frame so a jump of the mouse can't fire a crumb into orbit
+    let to: { x: number; y: number } | undefined
+    const from = this.pusherAt
+    if (this.push && this.pointer && !this.sucking) {
+      to = { x: (this.pointer.x * 2 - 1) * CRUMB_VIEW_H * this.aspect, y: (this.pointer.y * 2 - 1) * CRUMB_VIEW_H }
+      if (from) {
+        const dx = to.x - from.x
+        const dy = to.y - from.y
+        const d = Math.hypot(dx, dy)
+        if (d > PUSH_MAX_STEP) to = { x: from.x + (dx / d) * PUSH_MAX_STEP, y: from.y + (dy / d) * PUSH_MAX_STEP }
+      }
+    }
+    if (this.push && to && from) this.shove(from, to, dt)
     let steps = 0
     while (this.acc >= world.timestep && steps < 3) {
       world.step()
       this.acc -= world.timestep
       steps += 1
     }
+    this.pusherAt = to
 
     for (const it of this.items) {
       const t = it.body.translation()

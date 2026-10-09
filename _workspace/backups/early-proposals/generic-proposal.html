@@ -1,0 +1,734 @@
+<title>Proposta GENERIC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:ital,wght@0,400;0,600;0,700;1,400&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap">
+
+<style>
+  :root {
+    --ground: #ffffff;
+    --ground-sunk: #f1f3f6;
+    --ink: #14151a;
+    --ink-soft: #5b5f6b;
+    --rule: #d9dce1;
+    --rule-strong: #14151a;
+    --link: #0000ee;
+    --link-visited: #551a8b;
+
+    --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --sans: "Public Sans", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --measure: 42rem;
+    --shell: 47rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0e0f12;
+      --ground-sunk: #17191f;
+      --ink: #e7e8e6;
+      --ink-soft: #979ba6;
+      --rule: #2a2d34;
+      --rule-strong: #4a4e57;
+      --link: #7ca6ff;
+      --link-visited: #c29deb;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0e0f12;
+    --ground-sunk: #17191f;
+    --ink: #e7e8e6;
+    --ink-soft: #979ba6;
+    --rule: #2a2d34;
+    --rule-strong: #4a4e57;
+    --link: #7ca6ff;
+    --link-visited: #c29deb;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 1.0625rem;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+    padding-bottom: 5.5rem;
+  }
+
+  ::selection { background: var(--link); color: var(--ground); }
+
+  .shell {
+    max-width: var(--shell);
+    margin: 0 auto;
+    padding: clamp(1.75rem, 1rem + 3vw, 4rem) clamp(1.25rem, 0.6rem + 3vw, 3rem) 4rem;
+  }
+
+  a {
+    color: var(--link);
+    text-underline-offset: 2px;
+  }
+  a:visited { color: var(--link-visited); }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    border-bottom: 2px solid var(--rule-strong);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2.75rem;
+  }
+  .wordmark {
+    font-family: Times, "Times New Roman", serif;
+    font-weight: 400;
+    font-size: clamp(2.25rem, 1.6rem + 2.4vw, 3.25rem);
+    line-height: 1;
+    letter-spacing: 0.01em;
+    margin: 0;
+  }
+  .masthead__sub {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 1.02rem;
+    margin: 0.7rem 0 0;
+  }
+  .metarow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.4rem;
+    align-items: baseline;
+    margin-top: 1.1rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .toggle {
+    margin-left: auto;
+    display: inline-flex;
+    gap: 0.35rem;
+  }
+  .toggle button {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    text-transform: lowercase;
+    letter-spacing: 0.03em;
+    background: transparent;
+    color: var(--ink-soft);
+    border: 1px solid var(--rule);
+    padding: 0.2rem 0.5rem;
+    cursor: pointer;
+  }
+  .toggle button[aria-pressed="true"] {
+    color: var(--ground);
+    background: var(--ink);
+    border-color: var(--ink);
+  }
+  .toggle button:focus-visible,
+  .cookie button:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--link);
+    outline-offset: 2px;
+  }
+
+  /* ---------- prose ---------- */
+  section { margin-top: 3.5rem; }
+  .prose { max-width: var(--measure); }
+  .prose p { margin: 0 0 1.1rem; }
+  .prose p:last-child { margin-bottom: 0; }
+
+  h2 {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 1.42rem;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0 0 0.4rem;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 0 0 1.1rem;
+  }
+  .lead { font-size: 1.14rem; }
+
+  strong { font-weight: 600; }
+  em { font-style: italic; }
+  .say {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    font-style: normal;
+    background: var(--ground-sunk);
+    padding: 0.05em 0.32em;
+  }
+
+  .rule-note {
+    border-left: 3px solid var(--link);
+    padding: 0.15rem 0 0.15rem 1rem;
+    margin: 1.6rem 0 0;
+    font-style: italic;
+    color: var(--ink);
+    max-width: var(--measure);
+  }
+
+  /* ---------- constants ---------- */
+  .const-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+    margin-top: 1.5rem;
+  }
+  .const {
+    border-left: 3px solid var(--link);
+    background: var(--ground-sunk);
+    padding: 1rem 1.15rem 1.1rem;
+  }
+  .const h3 {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 0.74rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin: 0 0 0.5rem;
+  }
+  .const p {
+    margin: 0;
+    font-size: 0.96rem;
+    line-height: 1.5;
+  }
+  .const p + p { margin-top: 0.55rem; }
+
+  /* ---------- hero block ---------- */
+  .hero-def {
+    border: 2px solid var(--rule-strong);
+    padding: 1.4rem 1.5rem;
+    margin-top: 1.5rem;
+    max-width: var(--measure);
+  }
+  .hero-def p { margin: 0 0 0.9rem; }
+  .hero-def p:last-child { margin-bottom: 0; }
+  .kv {
+    font-family: var(--mono);
+    font-size: 0.9rem;
+  }
+  .kv b {
+    display: inline-block;
+    min-width: 6.5rem;
+    color: var(--ink-soft);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.72rem;
+  }
+
+  /* ---------- rooms ---------- */
+  .rooms { counter-reset: room; }
+  .room {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    column-gap: 2rem;
+    border-top: 2px solid var(--rule-strong);
+    padding-top: 1.4rem;
+    margin-top: 2.75rem;
+  }
+  .room:first-of-type { margin-top: 1.75rem; }
+  .room__num {
+    font-family: var(--mono);
+    font-weight: 400;
+    font-size: 2rem;
+    line-height: 1;
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+  }
+  .room__tags {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    line-height: 1.35;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
+  }
+  .room__tags b {
+    display: block;
+    color: var(--ink);
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 0.82rem;
+    margin-top: 0.1rem;
+  }
+  .room__body h3 {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 1.16rem;
+    margin: 0 0 0.15rem;
+    letter-spacing: -0.01em;
+  }
+  .room__body .tag-name {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 0 0 0.9rem;
+  }
+  .room__body p { margin: 0 0 0.85rem; }
+  .room__body p:last-child { margin-bottom: 0; }
+  .room__label {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .room__copy {
+    border-left: 3px solid var(--link);
+    background: var(--ground-sunk);
+    padding: 0.75rem 1rem;
+    margin: 0 0 0.9rem;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: var(--ink);
+  }
+  .room--climax .room__num { color: var(--link); }
+
+  /* ---------- decisions ---------- */
+  .decision {
+    display: grid;
+    grid-template-columns: 1.6rem 1fr;
+    column-gap: 0.85rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .decision:first-of-type { border-top: 1px solid var(--rule); }
+  .decision__box {
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    color: var(--ink-soft);
+  }
+  .decision__t {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin: 0 0 0.2rem;
+  }
+  .decision__d { margin: 0; font-size: 0.98rem; line-height: 1.5; }
+  .decision__tag {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-soft);
+    margin-top: 0.35rem;
+    display: inline-block;
+  }
+
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 2px solid var(--rule-strong);
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  /* ---------- cookie banner ---------- */
+  .cookie {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--ink);
+    color: var(--ground);
+    padding: 0.75rem clamp(1rem, 0.5rem + 2vw, 2rem);
+    display: flex;
+    align-items: center;
+    gap: 1rem 1.25rem;
+    flex-wrap: wrap;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    z-index: 20;
+  }
+  .cookie p { margin: 0; max-width: 46ch; }
+  .cookie__btns { display: flex; gap: 0.6rem; margin-left: auto; }
+  .cookie button {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.03em;
+    background: transparent;
+    color: var(--ground);
+    border: 1px solid var(--ground);
+    padding: 0.35rem 0.7rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .cookie button:hover { background: var(--ground); color: var(--ink); }
+
+  @media (max-width: 620px) {
+    .const-grid { grid-template-columns: 1fr; }
+    .room { grid-template-columns: 1fr; row-gap: 0.4rem; }
+    .room__rail { display: flex; align-items: baseline; gap: 1.5rem; }
+    .room__tags { flex-direction: row; flex-wrap: wrap; gap: 0.5rem 1.25rem; margin-top: 0.4rem; }
+    .cookie__btns { margin-left: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+</style>
+
+<div class="shell">
+  <header class="masthead">
+    <h1 class="wordmark">GENERIC</h1>
+    <p class="masthead__sub">Direção criativa &amp; mapa de páginas do site</p>
+    <div class="metarow">
+      <span>v0.1</span>
+      <span>07 set 2026</span>
+      <span>rascunho — nada disto é definitivo</span>
+      <span class="toggle" data-no-swap>
+        <button type="button" data-theme-set="light">light</button>
+        <button type="button" data-theme-set="dark">dark</button>
+      </span>
+    </div>
+  </header>
+
+  <main>
+    <section class="prose" id="conceito" style="margin-top:0">
+      <p class="eyebrow">O conceito</p>
+      <h2>Um estúdio de uma pessoa só que finge não ter se esforçado.</h2>
+      <p class="lead">A copy jura que o site é simples, sem esforço, nada de especial. O site é um circo virtuoso. Cada página é um universo autoral fechado, sem parentesco visual nenhum com a página vizinha — como se pessoas diferentes tivessem construído cada uma sem nunca se reunirem. Que é literalmente o que a empresa é.</p>
+      <p>O que segura tudo junto: a voz <em>deadpan</em> da copy, e alguns poucos elementos brutalmente constantes. O <span class="say">GENERIC</span> está no nome e na promessa — não na estética. Nada aqui parece template.</p>
+      <p><strong>Calibração (referência, não pra copiar):</strong> a estrutura vem de sketch.london — cômodos desconexos, cada um um mundo, colados por clima e não por grid. A atitude vem de resn.co.nz — competência de primeira linha vestida de piada, "a gente não tá nem aí e mesmo assim saiu impecável".</p>
+      <p class="rule-note">A regra que não pode quebrar: a tela é circo, o tom é formulário de RH. Nada pisca.</p>
+    </section>
+
+    <section id="constantes">
+      <p class="eyebrow">A camada constante</p>
+      <h2>Quatro coisas idênticas em todo canto.</h2>
+      <p class="prose">São a assinatura por ausência de assinatura — o único fio visível que atravessa todas as salas.</p>
+      <div class="const-grid">
+        <div class="const">
+          <h3>Wordmark</h3>
+          <p>"GENERIC" no canto superior esquerdo. Fonte default do browser. Zero estilo. Nunca se move.</p>
+        </div>
+        <div class="const">
+          <h3>Cookie banner</h3>
+          <p>Nunca fecha. <em>"We use cookies. Not to track your soul across the internet, but because the web browser freaks out if we don't put this banner here."</em></p>
+          <p>Botões: <span class="say">[ ACCEPT COOKIES ]</span> <span class="say">[ I PREFER BISCUITS ]</span>. "Biscuits" troca todo "cookie" do site por "biscuit" e derruba um biscoito low-poly na cena de física em que você estiver.</p>
+        </div>
+        <div class="const">
+          <h3>O Loader</h3>
+          <p>Spinner default entre cada sala, com uma frase deadpan diferente a cada vez: <em>"this should be instant" · "loading things" · "why is this taking so long, it's just a website"</em>. É a única transição. É a âncora.</p>
+        </div>
+        <div class="const">
+          <h3>Rodapé</h3>
+          <p>Mostra o domínio cru, sem tratamento: <span class="say">generic.bargains</span>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="hero">
+      <p class="eyebrow">A hero — o hub</p>
+      <h2>The Blank Page.</h2>
+      <p class="prose">A única superfície calma. Genérica no sentido de subvalorizada, familiar, quase vazia — o oposto do caos das salas internas.</p>
+      <div class="hero-def">
+        <p>Uma superfície WebGL só: uma folha em branco flutuando num vazio off-white. Impresso nela, deadpan: <em>GENERIC. We do things for people.</em></p>
+        <p>Espalhadas na folha estão as <strong>portas</strong> — anomalias sem relação nenhuma entre si. Cada porta é um fragmento vivo da sala do outro lado, já se mexendo, vazando pela superfície quando você chega perto.</p>
+        <p class="kv"><b>Cursor</b> seta default, mas 3D, com peso, inércia e sombra. Perto de uma porta, vira o cursor daquela sala.</p>
+        <p class="kv"><b>Atravessar</b> chega na porta → a superfície rasga → Loader → sala.</p>
+      </div>
+    </section>
+
+    <section class="rooms" id="salas">
+      <p class="eyebrow">As salas — catálogo, não sequência (a ordem não importa)</p>
+      <h2>Nove mundos que não se falam.</h2>
+      <p class="prose">Cada um 100% resolvido por dentro. A curadoria é invisível mas feroz — o momento que uma sala parecer meio pronta, a piada vira desculpa.</p>
+
+      <div class="room">
+        <div class="room__rail">
+          <div class="room__num">01</div>
+          <div class="room__tags"><span>Porta<b>Logo 3D girando</b></span><span>Cursor<b>orbitar</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>Services</h3>
+          <p class="tag-name">"The Spinning Logo"</p>
+          <div class="room__copy">software · coding · maintenance · consulting — "we write words that computer understand so your computer does the thing." Gag: "make the logo spin in 3D → it spins. It looks terrible, but you asked for it."</div>
+          <p><span class="room__label">Universo.</span> Showroom branco tipo página da Apple: iluminação de estúdio, um objeto num pedestal, rotação lenta, HDRI, profundidade de campo. O objeto é uma wordmark cromada horrorosa. Cada serviço é um "variant" que você seleciona e o objeto vira uma forma igualmente feia.</p>
+          <p><span class="room__label">Jogo.</span> Pega o logo, gira, arremessa. Física de verdade — ele derruba o pedestal. Aparece um pequeno <em>"please don't"</em>.</p>
+        </div>
+      </div>
+
+      <div class="room">
+        <div class="room__rail">
+          <div class="room__num">02</div>
+          <div class="room__tags"><span>Porta<b>Uma dobra do fole numa fresta</b></span><span>Cursor<b>mão que puxa</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>FAQ</h3>
+          <p class="tag-name">"The Accordion"</p>
+          <div class="room__copy">"Do you use Agile or Waterfall? We work on it until it is finished." · "this page loaded in 0.00001 seconds. You are welcome."</div>
+          <p><span class="room__label">Universo.</span> Um acordeão — o instrumento — em 3D, preenchendo a tela. Cada pergunta é uma dobra do fole. Abrir uma pergunta puxa o fole fisicamente e ele geme uma nota. Quanto mais perguntas abertas, mais distendido e absurdo o instrumento fica. As respostas ficam impressas nas dobras.</p>
+          <p><span class="room__label">Jogo.</span> Toca. O teclado vira notas. Tem uma música escondida.</p>
+        </div>
+      </div>
+
+      <div class="room">
+        <div class="room__rail">
+          <div class="room__num">03</div>
+          <div class="room__tags"><span>Porta<b>Um furo de luz na superfície</b></span><span>Cursor<b>retículo de telescópio</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>Case Studies</h3>
+          <p class="tag-name">"The Observatory"</p>
+          <div class="room__copy">"Client X had a problem. We made a solution. Client X made money. End of study."</div>
+          <p><span class="room__label">Universo.</span> Um céu WebGL escuro. Cada case é um punhado de estrelas. Você arrasta pra ligar os pontos (problema → solução → dinheiro). Completou a constelação, uma frase seca digita sozinha. Profundidade de parallax nas estrelas, partículas de nebulosa.</p>
+          <p><span class="room__label">Jogo.</span> Ligar os pontos.</p>
+        </div>
+      </div>
+
+      <div class="room">
+        <div class="room__rail">
+          <div class="room__num">04</div>
+          <div class="room__tags"><span>Porta<b>Uma laje de logo deitada</b></span><span>Cursor<b>garra</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>Social Proof</h3>
+          <p class="tag-name">"The Logo Pile"</p>
+          <div class="room__copy">Trusted by "A Company", "Another Company", "A Third, Slightly Larger Company". · "I gave them money. They gave me software. The software functions." — John, Person.</div>
+          <p><span class="room__label">Universo.</span> Sandbox de física. Logos corporativos genéricos (um círculo, um swoosh, "A COMPANY" em Helvetica) como lajes 3D pesadas empilhadas pela gravidade. "A Third, Slightly Larger Company" é um pouco maior e esmaga as outras. Os depoimentos ficam gravados no verso das lajes.</p>
+          <p><span class="room__label">Jogo.</span> Empilhar. Derrubar a pilha.</p>
+        </div>
+      </div>
+
+      <div class="room">
+        <div class="room__rail">
+          <div class="room__num">05</div>
+          <div class="room__tags"><span>Porta<b>Um retângulo de projetor na superfície</b></span><span>Cursor<b>ponto de laser vermelho</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>Pitch Deck</h3>
+          <p class="tag-name">"The Presentation"</p>
+          <div class="room__copy">"OUR SOFTWARE WORKS AND YOUR CURRENT SOFTWARE DOES NOT." (End of Presentation. Questions?)</div>
+          <p><span class="room__label">Universo.</span> Slides fullscreen no tema padrão do Google Slides — a única coisa genuinamente "genérica" à vista. Mas cada transição é um movimento de câmera 3D por um espaço físico onde os slides são monólitos gigantes. O "template default" é mentira; é um mundo.</p>
+          <p><span class="room__label">Jogo.</span> Clica em "Questions?" e cai num loop infinito de não-respostas deadpan.</p>
+        </div>
+      </div>
+
+      <div class="room">
+        <div class="room__rail">
+          <div class="room__num">06</div>
+          <div class="room__tags"><span>Porta<b>Uma engrenagem girando na borda</b></span><span>Cursor<b>moeda</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>The Process</h3>
+          <p class="tag-name">"The Machine"</p>
+          <div class="room__copy">STEP 1–6. "STEP 3: You give us half the money." · "If Step 3 does not happen, Step 4 will also not happen."</div>
+          <p><span class="room__label">Universo.</span> Uma máquina de Rube Goldberg / esteira, parallax lateral, física. Uma moeda entra no STEP 1 e viaja pelas engenhocas. No STEP 3 tem um portão: se você não "insere a moeda" (clique), a máquina inteira congela e desce uma placa — <em>"Step 4 will also not happen."</em></p>
+          <p><span class="room__label">Jogo.</span> Um marble-run que você alimenta.</p>
+        </div>
+      </div>
+
+      <div class="room">
+        <div class="room__rail">
+          <div class="room__num">07</div>
+          <div class="room__tags"><span>Porta<b>Uma cabeça low-poly flutuando (olhos já te seguem na hero)</b></span><span>Cursor<b>default</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>Team</h3>
+          <p class="tag-name">"The Busts"</p>
+          <div class="room__copy">CEO: a guy named Dave who owns a laptop. CTO: another guy who drinks coffee and types faster. Lead Designer: complains about kerning until everyone leaves the room. Head of HR: there is no HR. · Core values: Integrity, Speed, Excellence.</div>
+          <p><span class="room__label">Universo.</span> Um grid corporativo "About Us" — 4 cards de headshot — mas cada headshot é o mesmo busto low-poly com um adereço diferente (laptop / café / óculos / pedestal vazio pro RH). Os olhos seguem o cursor. Hover recita a bio numa voz de TTS chapada. O RH é um pedestal vazio; hover não faz nada, pra sempre.</p>
+          <p><span class="room__label">Jogo.</span> Girar os bustos, trocar os adereços — põe o café no Dave, ele vira CTO.</p>
+        </div>
+      </div>
+
+      <div class="room">
+        <div class="room__rail">
+          <div class="room__num">08</div>
+          <div class="room__tags"><span>Porta<b>Uma linha de texto minúsculo ilegível</b></span><span>Cursor<b>caneta-tinteiro</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>Terms &amp; Scope</h3>
+          <p class="tag-name">"The Fine Print"</p>
+          <div class="room__copy">"What You Think You Signed / What You Actually Signed." · "Unlimited revisions → 2 revisions. After that, we charge you for every breath we take in your presence." + a tabela "What You Ask For / What Actually Happens / Cost".</div>
+          <p><span class="room__label">Universo.</span> Um documento jurídico infinito — uma coluna de texto recuando pro ponto de fuga em 3D, parallax no scroll. Conforme você rola, a tradução "human readable" vaza por trás do juridiquês (duas camadas de profundidade). No fim: um campo de assinatura. Assinou (desenhou com o cursor) → carimbo: <em>"TOO LATE."</em></p>
+          <p><span class="room__label">Jogo.</span> Desenhar a assinatura e ser julgado por ela.</p>
+        </div>
+      </div>
+
+      <div class="room room--climax">
+        <div class="room__rail">
+          <div class="room__num">09</div>
+          <div class="room__tags"><span>Porta<b>Os dois botõezinhos lado a lado — o único texto clicável da hero</b></span><span>Cursor<b>cartão de crédito</b></span></div>
+        </div>
+        <div class="room__body">
+          <h3>Checkout <span class="say">← o clímax / a CTA</span></h3>
+          <p class="tag-name">"Pay Money / Do Not Pay Money"</p>
+          <div class="room__copy">[Pay Money] [Do Not Pay Money] · "THINK ABOUT WHAT YOU'VE DONE." · "SUCCESS. You have successfully paid money. We have received the money. A invoice has been sent to your inbox. It contains numbers."</div>
+          <p><span class="room__label">Universo.</span> Uma tela de checkout Stripe-perfeita flutuando no vazio, com materialidade real — o cartão parece um objeto de verdade. Dois botões.</p>
+          <p><span class="room__label">Pay Money.</span> Um SUCCESS cerimonial e lento. Confete feito de notas fiscais minúsculas. Um recibo 3D sai pela borda de baixo da tela como uma tira de papel real que você puxa — infinita, coberta de números sem sentido. Resolve pro <span class="say">[ EMAIL US ]</span> de verdade.</p>
+          <p><span class="room__label">Do Not Pay Money.</span> A tela fica preta. Um botão: <em>"THINK ABOUT WHAT YOU'VE DONE."</em> Clicou, volta pro checkout. Loop.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="decisoes">
+      <p class="eyebrow">Decisões em aberto</p>
+      <h2>Seis coisas que a gente precisa resolver antes de construir.</h2>
+
+      <div class="decision">
+        <div class="decision__box">[ ]</div>
+        <div>
+          <p class="decision__t">Framework</p>
+          <p class="decision__d">Next.js multipágina vs. SPA com router próprio e canvas WebGL persistente entre salas. Os dois exigem cuidado com o contexto WebGL sobrevivendo à navegação.</p>
+          <span class="decision__tag">— em aberto</span>
+        </div>
+      </div>
+
+      <div class="decision">
+        <div class="decision__box">[ ]</div>
+        <div>
+          <p class="decision__t">Quantas salas na v1</p>
+          <p class="decision__d">Nove é muito. Corte candidato pra sete: fundir Case Studies em Social Proof e Core Values inteiro em Team. Alternativa: lançar cinco e adicionar salas depois como "novos produtos genéricos".</p>
+          <span class="decision__tag">— em aberto</span>
+        </div>
+      </div>
+
+      <div class="decision">
+        <div class="decision__box">[ ]</div>
+        <div>
+          <p class="decision__t">Preview das portas</p>
+          <p class="decision__d">Cada porta precisa da cena da sala pré-carregada — orçamento de performance. Talvez o preview seja um stand-in 2D/vídeo barato e a cena real carrega só na entrada.</p>
+          <span class="decision__tag">— em aberto</span>
+        </div>
+      </div>
+
+      <div class="decision">
+        <div class="decision__box">[ ]</div>
+        <div>
+          <p class="decision__t">Mobile / reduced-motion</p>
+          <p class="decision__d">Não roda nove mundos WebGL num celular. Uma "versão mobile" text-only deadpan é on-brand (<em>"you are on a phone. the website is smaller now."</em>) mas cada sala ainda precisa de um fallback próprio.</p>
+          <span class="decision__tag">— em aberto</span>
+        </div>
+      </div>
+
+      <div class="decision">
+        <div class="decision__box">[ ]</div>
+        <div>
+          <p class="decision__t">Transição entre salas</p>
+          <p class="decision__d">Confirmar o modelo do Loader genérico, ou trocar por algo mais violento.</p>
+          <span class="decision__tag">— em aberto</span>
+        </div>
+      </div>
+
+      <div class="decision">
+        <div class="decision__box">[ ]</div>
+        <div>
+          <p class="decision__t">Som</p>
+          <p class="decision__d">Ligado por padrão (com mute) ou desligado? A sala do acordeão depende dele.</p>
+          <span class="decision__tag">— em aberto</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>GENERIC — proposta v0.1</span>
+    <span>generic.bargains</span>
+  </footer>
+</div>
+
+<div class="cookie" id="cookie" data-no-swap>
+  <p id="cookie-note">We use cookies. Not to track your soul across the internet, but because the web browser freaks out if we don't put this banner here.</p>
+  <span class="cookie__btns">
+    <button type="button" id="cookie-accept">[ ACCEPT COOKIES ]</button>
+    <button type="button" id="cookie-biscuit">[ I PREFER BISCUITS ]</button>
+  </span>
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+
+    try {
+      var saved = localStorage.getItem("generic-theme");
+      if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+    } catch (e) {}
+
+    function syncButtons() {
+      var cur = root.getAttribute("data-theme");
+      var btns = document.querySelectorAll("[data-theme-set]");
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].setAttribute("aria-pressed", String(btns[i].getAttribute("data-theme-set") === cur));
+      }
+    }
+    var tbtns = document.querySelectorAll("[data-theme-set]");
+    for (var i = 0; i < tbtns.length; i++) {
+      tbtns[i].addEventListener("click", function () {
+        var t = this.getAttribute("data-theme-set");
+        root.setAttribute("data-theme", t);
+        try { localStorage.setItem("generic-theme", t); } catch (e) {}
+        syncButtons();
+      });
+    }
+    syncButtons();
+
+    function swap(s) {
+      return s
+        .replace(/COOKIES/g, "BISCUITS").replace(/COOKIE/g, "BISCUIT")
+        .replace(/Cookies/g, "Biscuits").replace(/Cookie/g, "Biscuit")
+        .replace(/cookies/g, "biscuits").replace(/cookie/g, "biscuit");
+    }
+
+    var done = false;
+    function toBiscuits() {
+      if (done) return;
+      done = true;
+      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+      var nodes = [];
+      var n;
+      while ((n = walker.nextNode())) {
+        var p = n.parentNode;
+        if (!p) continue;
+        if (p.nodeName === "SCRIPT" || p.nodeName === "STYLE") continue;
+        if (/cookie/i.test(n.nodeValue)) nodes.push(n);
+      }
+      for (var j = 0; j < nodes.length; j++) nodes[j].nodeValue = swap(nodes[j].nodeValue);
+    }
+
+    var note = document.getElementById("cookie-note");
+    var accept = document.getElementById("cookie-accept");
+    var biscuit = document.getElementById("cookie-biscuit");
+
+    accept.addEventListener("click", function () {
+      note.textContent = "Noted.";
+      accept.hidden = true;
+      biscuit.hidden = true;
+    });
+
+    biscuit.addEventListener("click", function () {
+      toBiscuits();
+      note.textContent = "Fine. A low-poly biscuit has been added to the current physics scene.";
+      accept.hidden = true;
+      biscuit.hidden = true;
+    });
+  })();
+</script>

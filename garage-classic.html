@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>GENERIC — About us (classic)</title>
+    <meta name="description" content="GENERIC headquarters. A garage." />
+    <style>
+      html, body { margin: 0; background: #121212; }
+      /* normal scroll: the room is the first screen and scrolls away with the page */
+      #garage { position: absolute; top: 0; left: 0; width: 100%; height: 100vh; display: block; }
+      /* About us content, right below the room — EMPTY for now (Danilo's content goes here) */
+      #about { position: relative; margin-top: 100vh; min-height: 100vh; background: #121212; }
+    </style>
+  </head>
+  <body>
+    <canvas id="garage"></canvas>
+    <main id="about"></main>
+    <script type="module" src="/src/garage/mainClassic.ts"></script>
+  </body>
+</html>

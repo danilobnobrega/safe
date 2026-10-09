@@ -1,0 +1,365 @@
+<title>GENERIC — Hero</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@1,400;1,500&family=IBM+Plex+Mono:wght@400;500&family=Tinos:wght@400;700&display=swap">
+
+<style>
+  :root {
+    --paper: #f0efe9;
+    --ink: #16160f;
+    --hair: #16160f;
+    --blue: #0000ee;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    overflow: hidden;
+    cursor: none;
+  }
+  body::after {
+    content: "";
+    position: fixed; inset: 0; z-index: 100; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+    opacity: 0.035;
+    mix-blend-mode: multiply;
+  }
+  .vignette {
+    position: fixed; inset: 0; z-index: 1; pointer-events: none;
+    background: radial-gradient(120% 90% at 50% 42%, transparent 55%, rgba(22,22,15,0.06) 100%);
+  }
+
+  .hero {
+    position: fixed; inset: 0; z-index: 2;
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+  }
+
+  .stage { position: relative; }
+
+  .eyebrow {
+    font-family: "EB Garamond", Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: clamp(20px, 2.4vw, 34px);
+    letter-spacing: 0.01em;
+    margin-left: 0.14em;
+    margin-bottom: -0.06em;
+    opacity: 0.85;
+  }
+
+  .word {
+    position: relative;
+    font-family: Tinos, Times, "Times New Roman", serif;
+    font-weight: 400;
+    font-size: clamp(84px, 20vw, 300px);
+    line-height: 0.9;
+    white-space: nowrap;
+    height: 0.92em;
+    -webkit-user-select: none; user-select: none;
+  }
+  .glyph {
+    position: absolute;
+    top: 0;
+    display: inline-block;
+    will-change: transform;
+  }
+
+  .tool {
+    position: absolute;
+    left: 0; top: 0;
+    overflow: visible;
+    opacity: 0;
+    transition: opacity 0.35s ease;
+    pointer-events: none;
+  }
+  .word.contested .tool { opacity: 1; }
+
+  .tool .guide { stroke: var(--hair); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.28; }
+  .tool .bbox { fill: none; stroke: var(--hair); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.16; }
+  .tool .arrow { stroke: var(--hair); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.5; }
+  .tool .kv {
+    font: 500 11px/1 "IBM Plex Mono", monospace;
+    fill: var(--ink);
+    opacity: 0.65;
+  }
+  .tool .kv.hot { fill: var(--blue); opacity: 1; }
+
+  .hud {
+    position: fixed;
+    right: 22px; top: 22px; z-index: 4;
+    font: 400 11px/1.7 "IBM Plex Mono", monospace;
+    text-align: right;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink);
+    opacity: 0.55;
+  }
+  .hud b { font-weight: 500; }
+  .hud .st-unresolved { color: var(--blue); opacity: 1; }
+
+  .footer {
+    position: fixed; left: 22px; right: 22px; bottom: 18px; z-index: 4;
+    display: flex; justify-content: space-between;
+    font: 400 11px/1 "IBM Plex Mono", monospace;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    opacity: 0.5;
+  }
+  .footer .scroll { display: flex; align-items: center; gap: 8px; }
+  .footer .scroll::after {
+    content: ""; width: 1px; height: 26px;
+    background: var(--ink);
+    animation: drop 1.8s ease-in-out infinite;
+    transform-origin: top;
+  }
+  @keyframes drop { 0%,100% { transform: scaleY(0.2); opacity: .3 } 50% { transform: scaleY(1); opacity: 1 } }
+
+  #cursor { position: fixed; left: 0; top: 0; z-index: 120; pointer-events: none; transform: translate(-50%,-50%); }
+  #cursor .r { width: 30px; height: 30px; border: 1.5px solid var(--ink); border-radius: 50%; transition: width .25s, height .25s, opacity .25s; }
+  #cursor.warm .r { width: 44px; height: 44px; opacity: 0.5; }
+  #cursor .d { position: absolute; left: 50%; top: 50%; width: 3px; height: 3px; background: var(--ink); border-radius: 50%; transform: translate(-50%,-50%); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .footer .scroll::after { animation: none; }
+  }
+</style>
+
+<div class="vignette"></div>
+
+<div class="hero">
+  <div class="stage">
+    <div class="eyebrow">We are</div>
+    <div class="word" id="word" aria-label="GENERIC">
+      <svg class="tool" id="tool"></svg>
+    </div>
+  </div>
+</div>
+
+<div class="hud" id="hud">
+  <div>GENERIC — <b>7 glyphs</b></div>
+  <div>tracking&nbsp;&nbsp;<b id="trk">0.000em</b></div>
+  <div>kern pairs&nbsp;&nbsp;<b id="pairs">0 / 6</b></div>
+  <div>status&nbsp;&nbsp;<b id="status">fine</b></div>
+</div>
+
+<div class="footer">
+  <span>generic.bargains</span>
+  <span class="scroll">scroll</span>
+</div>
+
+<div id="cursor"><div class="r"></div><div class="d"></div></div>
+
+<script>
+(function () {
+  const LETTERS = "GENERIC".split("");
+  const word = document.getElementById("word");
+  const tool = document.getElementById("tool");
+  const trkEl = document.getElementById("trk");
+  const pairsEl = document.getElementById("pairs");
+  const statusEl = document.getElementById("status");
+
+  // build glyphs
+  const glyphs = LETTERS.map((ch) => {
+    const s = document.createElement("span");
+    s.className = "glyph";
+    s.textContent = ch;
+    word.appendChild(s);
+    return s;
+  });
+
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function svg(tag, attrs) {
+    const el = document.createElementNS(SVGNS, tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  let adv = [];       // natural left offset of each glyph
+  let gw = [];        // glyph widths
+  let baseline = 0, capTop = 0, wordW = 0, wordH = 0;
+  const gaps = LETTERS.slice(1).map(() => ({ v: 0, target: 0, next: 0 }));
+
+  let hovered = false;
+  let warmth = 0;     // 0..1 how far into the fight we are
+
+  function measure() {
+    // reset transforms so we read natural metrics
+    glyphs.forEach((g) => { g.style.transform = "none"; g.style.left = "0px"; g.style.position = "static"; });
+    word.style.whiteSpace = "nowrap";
+
+    // lay out inline briefly to grab widths
+    const wrap = document.createElement("span");
+    wrap.style.whiteSpace = "nowrap";
+    glyphs.forEach((g) => wrap.appendChild(g));
+    word.appendChild(wrap);
+    const wrapRect = wrap.getBoundingClientRect();
+    adv = []; gw = [];
+    let x = 0;
+    glyphs.forEach((g) => {
+      const r = g.getBoundingClientRect();
+      adv.push(r.left - wrapRect.left);
+      gw.push(r.width);
+      x = r.right - wrapRect.left;
+    });
+    wordW = x;
+    wordH = wrapRect.height;
+    // restore absolute positioning
+    glyphs.forEach((g) => { g.style.position = "absolute"; word.appendChild(g); });
+    wrap.remove();
+
+    baseline = wordH * 0.80;
+    capTop = wordH * 0.06;
+
+    word.style.width = wordW + "px";
+    word.style.height = wordH + "px";
+    tool.setAttribute("viewBox", `${-60} ${-40} ${wordW + 120} ${wordH + 90}`);
+    tool.style.width = wordW + 120 + "px";
+    tool.style.height = wordH + 90 + "px";
+    tool.style.left = "-60px";
+    tool.style.top = "-40px";
+    layout();
+    buildTool();
+  }
+
+  function layout() {
+    let shift = 0;
+    for (let i = 0; i < glyphs.length; i++) {
+      if (i > 0) shift += gaps[i - 1].v;
+      glyphs[i].style.left = adv[i] + shift + "px";
+    }
+  }
+
+  // persistent tool nodes
+  let bboxes = [], vlines = [], arrows = [], kvs = [], hLines = [];
+  function buildTool() {
+    tool.innerHTML = "";
+    bboxes = []; vlines = []; arrows = []; kvs = []; hLines = [];
+
+    const bl = svg("line", { class: "guide", x1: -50, y1: baseline, x2: wordW + 50, y2: baseline });
+    const cl = svg("line", { class: "guide", x1: -50, y1: capTop, x2: wordW + 50, y2: capTop });
+    tool.append(bl, cl);
+    hLines = [bl, cl];
+
+    glyphs.forEach(() => {
+      const b = svg("rect", { class: "bbox", x: 0, y: capTop, width: 10, height: baseline - capTop });
+      const vl = svg("line", { class: "guide", x1: 0, y1: capTop - 22, x2: 0, y2: baseline + 22 });
+      tool.append(b, vl);
+      bboxes.push(b); vlines.push(vl);
+    });
+
+    gaps.forEach(() => {
+      const a = svg("line", { class: "arrow", x1: 0, y1: 0, x2: 0, y2: 0 });
+      const t1 = svg("line", { class: "arrow", x1: 0, y1: 0, x2: 0, y2: 0 });
+      const t2 = svg("line", { class: "arrow", x1: 0, y1: 0, x2: 0, y2: 0 });
+      const kv = svg("text", { class: "kv", "text-anchor": "middle" });
+      tool.append(a, t1, t2, kv);
+      arrows.push({ a, t1, t2 });
+      kvs.push(kv);
+    });
+  }
+
+  function drawTool() {
+    let shift = 0;
+    const y = (capTop + baseline) / 2;
+    let maxAbs = 0;
+    gaps.forEach((g) => { if (Math.abs(g.v) > maxAbs) maxAbs = Math.abs(g.v); });
+
+    for (let i = 0; i < glyphs.length; i++) {
+      if (i > 0) shift += gaps[i - 1].v;
+      const gx = adv[i] + shift;
+      bboxes[i].setAttribute("x", gx);
+      bboxes[i].setAttribute("width", Math.max(gw[i], 1));
+      const edge = gx + gw[i];
+      vlines[i].setAttribute("x1", edge);
+      vlines[i].setAttribute("x2", edge);
+    }
+
+    for (let i = 0; i < gaps.length; i++) {
+      const leftEdge = adv[i] + (i === 0 ? 0 : sumGaps(i - 1)) + gw[i];
+      const rightStart = adv[i + 1] + sumGaps(i);
+      const { a, t1, t2 } = arrows[i];
+      a.setAttribute("x1", leftEdge); a.setAttribute("y1", y);
+      a.setAttribute("x2", rightStart); a.setAttribute("y2", y);
+      t1.setAttribute("x1", leftEdge); t1.setAttribute("y1", y - 5);
+      t1.setAttribute("x2", leftEdge); t1.setAttribute("y2", y + 5);
+      t2.setAttribute("x1", rightStart); t2.setAttribute("y1", y - 5);
+      t2.setAttribute("x2", rightStart); t2.setAttribute("y2", y + 5);
+      const kv = kvs[i];
+      const val = Math.round(gaps[i].v);
+      kv.textContent = (val >= 0 ? "+" : "") + val;
+      kv.setAttribute("x", (leftEdge + rightStart) / 2);
+      kv.setAttribute("y", capTop - 12);
+      kv.classList.toggle("hot", Math.abs(gaps[i].v) === maxAbs && maxAbs > 3);
+    }
+  }
+  function sumGaps(n) { let s = 0; for (let i = 0; i <= n; i++) s += gaps[i].v; return s; }
+
+  // ---- the fight ----------------------------------------------------------
+  let last = performance.now();
+  function tick(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+
+    warmth += ((hovered ? 1 : 0) - warmth) * (hovered ? 1.6 : 3.2) * dt;
+
+    let contestedCount = 0;
+    for (let i = 0; i < gaps.length; i++) {
+      const g = gaps[i];
+      if (hovered) {
+        if (now >= g.next) {
+          const amp = 6 + warmth * 52;
+          // usually a fresh nudge; sometimes an over-correction back through zero
+          if (Math.random() < 0.28) g.target = -g.v * (1.2 + Math.random());
+          else g.target = (Math.random() * 2 - 1) * amp;
+          g.next = now + 220 + Math.random() * 700;
+        }
+        g.v += (g.target - g.v) * (1 - Math.pow(0.0009, dt));
+        g.v += (Math.random() - 0.5) * warmth * 1.6;   // micro jitter
+      } else {
+        g.target = 0;
+        g.v += (0 - g.v) * (1 - Math.pow(0.00001, dt));
+        if (Math.abs(g.v) < 0.05) g.v = 0;
+      }
+      if (Math.abs(g.v) > 2) contestedCount++;
+    }
+
+    layout();
+    drawTool();
+
+    const tracking = (sumGaps(gaps.length - 1) / wordW);
+    trkEl.textContent = (tracking >= 0 ? "" : "-") + Math.abs(tracking).toFixed(3) + "em";
+    pairsEl.textContent = contestedCount + " / 6";
+    if (hovered && contestedCount > 0) {
+      statusEl.textContent = "UNRESOLVED";
+      statusEl.className = "st-unresolved";
+    } else {
+      statusEl.textContent = "fine";
+      statusEl.className = "";
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  // ---- events -----------------------------------------------------------
+  word.addEventListener("pointerenter", () => { hovered = true; word.classList.add("contested"); document.getElementById("cursor").classList.add("warm"); });
+  word.addEventListener("pointerleave", () => { hovered = false; word.classList.remove("contested"); document.getElementById("cursor").classList.remove("warm"); });
+
+  const cur = document.getElementById("cursor");
+  let cx = innerWidth / 2, cy = innerHeight / 2, tx = cx, ty = cy;
+  addEventListener("pointermove", (e) => { tx = e.clientX; ty = e.clientY; });
+  (function curLoop() {
+    cx += (tx - cx) * 0.25; cy += (ty - cy) * 0.25;
+    cur.style.transform = `translate(${cx}px, ${cy}px) translate(-50%,-50%)`;
+    requestAnimationFrame(curLoop);
+  })();
+
+  let rz;
+  addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(measure, 150); });
+
+  document.fonts.ready.then(() => {
+    measure();
+    requestAnimationFrame(tick);
+  });
+})();
+</script>

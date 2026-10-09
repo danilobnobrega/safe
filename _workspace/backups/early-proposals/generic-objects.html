@@ -1,0 +1,635 @@
+<title>Objetos GENERIC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d9d8d2; }
+  #c { position: fixed; inset: 0; display: block; }
+
+  .hud {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 12px 14px;
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    background: linear-gradient(to top, rgba(20,20,18,0.55), rgba(20,20,18,0));
+  }
+  .hud button {
+    font: 400 11px/1 "IBM Plex Mono", monospace;
+    letter-spacing: 0.03em;
+    color: #f2f1ec;
+    background: rgba(0,0,0,0.28);
+    border: 1px solid rgba(242,241,236,0.4);
+    padding: 6px 9px;
+    cursor: pointer;
+    backdrop-filter: blur(3px);
+  }
+  .hud button:hover { background: rgba(242,241,236,0.9); color: #14150f; }
+  .hud button[aria-pressed="true"] { background: #f2f1ec; color: #14150f; border-color: #f2f1ec; }
+
+  .tag {
+    position: fixed; top: 20px; left: 22px; z-index: 5;
+    font-family: "IBM Plex Mono", monospace;
+    color: #14150f;
+  }
+  .tag .n { font-size: 26px; font-weight: 500; letter-spacing: -0.01em; }
+  .tag .k { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.55; margin-top: 3px; }
+
+  .hint {
+    position: fixed; top: 22px; right: 22px; z-index: 5;
+    font-family: "IBM Plex Mono", monospace; font-size: 10px;
+    letter-spacing: 0.1em; text-transform: uppercase; color: #14150f; opacity: 0.4;
+    text-align: right; line-height: 1.7;
+  }
+</style>
+
+<canvas id="c"></canvas>
+<div class="tag"><div class="n" id="name">todos</div><div class="k" id="kind">os nove objetos-porta + o pato</div></div>
+<div class="hint">arraste — orbitar<br>scroll — zoom<br>clique um objeto</div>
+<div class="hud" id="hud"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
+
+const canvas = document.getElementById('c')
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+renderer.setSize(innerWidth, innerHeight)
+renderer.outputColorSpace = THREE.SRGBColorSpace
+renderer.toneMapping = THREE.ACESFilmicToneMapping
+renderer.toneMappingExposure = 1.05
+renderer.shadowMap.enabled = true
+renderer.shadowMap.type = THREE.PCFSoftShadowMap
+
+const scene = new THREE.Scene()
+scene.background = new THREE.Color('#d9d8d2')
+
+const pmrem = new THREE.PMREMGenerator(renderer)
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 200)
+camera.position.set(0, 6, 15)
+
+const controls = new OrbitControls(camera, canvas)
+controls.enableDamping = true
+controls.dampingFactor = 0.08
+controls.target.set(0, 0.7, 0)
+controls.maxPolarAngle = Math.PI * 0.52
+controls.minDistance = 2
+controls.maxDistance = 30
+
+// ---- lights ----------------------------------------------------------------
+const key = new THREE.DirectionalLight('#fff5e8', 2.1)
+key.position.set(6, 11, 7)
+key.castShadow = true
+key.shadow.mapSize.set(2048, 2048)
+key.shadow.camera.left = -14
+key.shadow.camera.right = 14
+key.shadow.camera.top = 10
+key.shadow.camera.bottom = -6
+key.shadow.camera.near = 1
+key.shadow.camera.far = 40
+key.shadow.bias = -0.0002
+scene.add(key)
+scene.add(new THREE.HemisphereLight('#eef0f4', '#6b6659', 0.35))
+
+// ---- ground --------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(40, 80),
+  new THREE.MeshStandardMaterial({ color: '#cdccc4', roughness: 0.95 }),
+)
+ground.rotation.x = -Math.PI / 2
+ground.receiveShadow = true
+scene.add(ground)
+
+// ---- material helpers -----------------------------------------------------
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, ...o })
+const phys = (color, o = {}) => new THREE.MeshPhysicalMaterial({ color, roughness: 0.5, ...o })
+
+function lathe(points, seg = 48) {
+  return new THREE.LatheGeometry(points.map((p) => new THREE.Vector2(p[0], p[1])), seg)
+}
+function mesh(geo, mat) {
+  const m = new THREE.Mesh(geo, mat)
+  m.castShadow = true
+  m.receiveShadow = true
+  return m
+}
+function noiseDisplace(geo, amp) {
+  const p = geo.attributes.position
+  for (let i = 0; i < p.count; i++) {
+    const n = 1 + (Math.sin(p.getX(i) * 7.3) * Math.cos(p.getY(i) * 6.1) * Math.sin(p.getZ(i) * 5.7)) * amp
+    p.setXYZ(i, p.getX(i) * n, p.getY(i) * n, p.getZ(i) * n)
+  }
+  geo.computeVertexNormals()
+  return geo
+}
+
+// =========================================================================
+//  THE OBJECTS
+// =========================================================================
+
+function trafficCone() {
+  const g = new THREE.Group()
+  const orange = std('#e8560f', { roughness: 0.55 })
+  const base = mesh(new RoundedBoxGeometry(1.5, 0.08, 1.5, 3, 0.03), orange)
+  base.position.y = 0.04
+  g.add(base)
+  const body = mesh(lathe([
+    [0.04, 0.05], [0.66, 0.06], [0.6, 0.12], [0.34, 0.14],
+    [0.28, 0.55], [0.2, 1.0], [0.12, 1.45], [0.09, 1.62], [0.0, 1.66],
+  ]), orange)
+  body.position.y = 0.05
+  g.add(body)
+  const band = mesh(new THREE.CylinderGeometry(0.31, 0.42, 0.5, 40, 1, true),
+    std('#f4f1ea', { roughness: 0.4, side: THREE.DoubleSide }))
+  band.position.y = 0.42
+  g.add(band)
+  g.rotation.z = 0.05
+  return g
+}
+
+function rotisserieChicken() {
+  const g = new THREE.Group()
+  const skin = phys('#a9611f', { roughness: 0.32, clearcoat: 0.7, clearcoatRoughness: 0.4, sheen: 0.5, sheenColor: new THREE.Color('#c98a3a') })
+  const bird = new THREE.Group()
+
+  const body = mesh(noiseDisplace(new THREE.IcosahedronGeometry(0.62, 4), 0.06), skin)
+  body.scale.set(1.35, 0.95, 1.05)
+  bird.add(body)
+
+  const breast = mesh(noiseDisplace(new THREE.IcosahedronGeometry(0.34, 3), 0.05), skin)
+  breast.position.set(0.55, 0.1, 0)
+  breast.scale.set(1.1, 0.9, 1.15)
+  bird.add(breast)
+
+  for (const s of [1, -1]) {
+    const leg = mesh(lathe([
+      [0.0, 0], [0.16, 0.05], [0.19, 0.28], [0.12, 0.5], [0.05, 0.62], [0.09, 0.72], [0.0, 0.78],
+    ], 24), skin)
+    leg.rotation.z = Math.PI / 2 + 0.5 * s
+    leg.position.set(-0.5, -0.05, 0.28 * s)
+    bird.add(leg)
+    const wing = mesh(noiseDisplace(new THREE.IcosahedronGeometry(0.26, 3), 0.05), skin)
+    wing.scale.set(1.5, 0.5, 0.9)
+    wing.position.set(0.05, 0.12, 0.52 * s)
+    bird.add(wing)
+  }
+
+  // trussing string
+  const string = std('#d8c9a8', { roughness: 0.9 })
+  for (const x of [-0.35, 0.1, 0.45]) {
+    const t = mesh(new THREE.TorusGeometry(0.5, 0.012, 8, 40), string)
+    t.rotation.y = Math.PI / 2
+    t.position.x = x
+    t.scale.y = 0.8
+    bird.add(t)
+  }
+
+  bird.position.y = 1.0
+  g.add(bird)
+  g.userData.spin = bird
+
+  // spit + forks + posts
+  const metal = std('#8b8d90', { metalness: 0.9, roughness: 0.3 })
+  const spit = mesh(new THREE.CylinderGeometry(0.025, 0.025, 3.4, 16), metal)
+  spit.rotation.z = Math.PI / 2
+  spit.position.y = 1.0
+  g.add(spit)
+  for (const x of [-1.5, 1.5]) {
+    const post = mesh(new THREE.CylinderGeometry(0.05, 0.06, 1.0, 16), metal)
+    post.position.set(x, 0.5, 0)
+    g.add(post)
+    const foot = mesh(new RoundedBoxGeometry(0.4, 0.06, 0.5, 2, 0.02), metal)
+    foot.position.set(x, 0.04, 0)
+    g.add(foot)
+  }
+  return g
+}
+
+function waterCooler() {
+  const g = new THREE.Group()
+  const white = std('#eceae2', { roughness: 0.45 })
+  const cab = mesh(new RoundedBoxGeometry(0.95, 1.15, 0.95, 4, 0.05), white)
+  cab.position.y = 0.62
+  g.add(cab)
+  const collar = mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.16, 40), std('#d7d5cc', { roughness: 0.6 }))
+  collar.position.y = 1.26
+  g.add(collar)
+  const bottle = mesh(lathe([
+    [0.0, 0], [0.14, 0.0], [0.14, 0.16], [0.34, 0.5], [0.42, 1.1], [0.34, 1.6], [0.0, 1.66],
+  ]), phys('#3f7fb0', { roughness: 0.08, transmission: 0.9, thickness: 0.4, ior: 1.33 }))
+  bottle.position.y = 1.3
+  g.add(bottle)
+  const water = mesh(lathe([
+    [0.0, 0], [0.32, 0.1], [0.4, 0.9], [0.3, 1.28], [0.0, 1.3],
+  ]), phys('#5aa6cf', { roughness: 0.15, transmission: 0.6, thickness: 1, opacity: 0.85, transparent: true }))
+  water.position.y = 1.32
+  g.add(water)
+  for (const [x, c] of [[-0.16, '#c0392b'], [0.16, '#2b6cb0']]) {
+    const tap = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.16, 12), std('#cfcdc4'))
+    tap.rotation.x = Math.PI / 2
+    tap.position.set(x, 0.72, 0.52)
+    g.add(tap)
+    const knob = mesh(new RoundedBoxGeometry(0.12, 0.16, 0.06, 2, 0.02), std(c))
+    knob.position.set(x, 0.82, 0.5)
+    g.add(knob)
+  }
+  const tray = mesh(new RoundedBoxGeometry(0.5, 0.04, 0.28, 2, 0.02), std('#b7b5ac', { metalness: 0.3 }))
+  tray.position.set(0, 0.5, 0.52)
+  g.add(tray)
+  return g
+}
+
+function pendulumClock() {
+  const g = new THREE.Group()
+  const wood = std('#5a3921', { roughness: 0.55 })
+  const dark = std('#3b2513', { roughness: 0.5 })
+  const cab = mesh(new RoundedBoxGeometry(0.82, 2.5, 0.5, 4, 0.04), wood)
+  cab.position.y = 1.3
+  g.add(cab)
+  const crown = mesh(new RoundedBoxGeometry(1.0, 0.26, 0.62, 3, 0.05), dark)
+  crown.position.y = 2.62
+  g.add(crown)
+  const foot = mesh(new RoundedBoxGeometry(1.0, 0.16, 0.62, 3, 0.04), dark)
+  foot.position.y = 0.08
+  g.add(foot)
+  const face = mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.05, 48), std('#efe9d8', { roughness: 0.5 }))
+  face.rotation.x = Math.PI / 2
+  face.position.set(0, 1.95, 0.26)
+  g.add(face)
+  const hMat = std('#1c1c1c')
+  const hh = mesh(new RoundedBoxGeometry(0.03, 0.17, 0.02, 1, 0.01), hMat)
+  hh.position.set(0, 1.99, 0.29); hh.rotation.z = 0.6
+  const mh = mesh(new RoundedBoxGeometry(0.025, 0.26, 0.02, 1, 0.01), hMat)
+  mh.position.set(0, 1.98, 0.29); mh.rotation.z = -1.9
+  g.add(hh, mh)
+  const glass = mesh(new THREE.BoxGeometry(0.62, 1.35, 0.02),
+    phys('#ffffff', { roughness: 0.05, transmission: 0.95, thickness: 0.1 }))
+  glass.position.set(0, 1.0, 0.26)
+  g.add(glass)
+  const pend = new THREE.Group()
+  const rod = mesh(new RoundedBoxGeometry(0.03, 1.1, 0.03, 1, 0.01), std('#b8912f', { metalness: 0.7, roughness: 0.3 }))
+  rod.position.y = -0.55
+  const bob = mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.04, 40), std('#c8a13a', { metalness: 0.8, roughness: 0.25 }))
+  bob.rotation.x = Math.PI / 2
+  bob.position.y = -1.05
+  pend.add(rod, bob)
+  pend.position.set(0, 1.55, 0.2)
+  g.add(pend)
+  g.userData.pendulum = pend
+  return g
+}
+
+function kiddiePool() {
+  const g = new THREE.Group()
+  const wall = mesh(lathe([
+    [0.0, 0.0], [1.5, 0.0], [1.62, 0.06], [1.64, 0.42], [1.5, 0.46], [1.5, 0.08], [0.0, 0.06],
+  ], 60), std('#2f8fd0', { roughness: 0.35, side: THREE.DoubleSide }))
+  g.add(wall)
+  const ring = mesh(new THREE.TorusGeometry(1.55, 0.12, 16, 60), std('#e23b3b', { roughness: 0.3 }))
+  ring.rotation.x = Math.PI / 2
+  ring.position.y = 0.44
+  g.add(ring)
+  const water = mesh(new THREE.CircleGeometry(1.46, 60),
+    phys('#4fb0d8', { roughness: 0.12, transmission: 0.5, thickness: 0.6, opacity: 0.9, transparent: true }))
+  water.rotation.x = -Math.PI / 2
+  water.position.y = 0.3
+  g.add(water)
+  return g
+}
+
+function vendingMachine() {
+  const g = new THREE.Group()
+  const body = mesh(new RoundedBoxGeometry(1.7, 2.8, 1.2, 5, 0.05), std('#b5241f', { roughness: 0.45 }))
+  body.position.y = 1.4
+  g.add(body)
+  const well = mesh(new THREE.BoxGeometry(1.28, 2.1, 1.0), std('#141414', { roughness: 0.9 }))
+  well.position.set(-0.12, 1.65, 0.05)
+  g.add(well)
+  const glow = new THREE.PointLight('#fff2cf', 6, 4)
+  glow.position.set(-0.1, 1.7, 0.1)
+  g.add(glow)
+  const colors = ['#e8b800', '#2f8fd0', '#e23b3b', '#3aa66a', '#e8560f', '#8250c8', '#f2f1ec']
+  for (let row = 0; row < 4; row++) {
+    const shelf = mesh(new THREE.BoxGeometry(1.2, 0.03, 0.9), std('#2a2a2a'))
+    shelf.position.set(-0.12, 0.75 + row * 0.5, 0.05)
+    g.add(shelf)
+    for (let col = 0; col < 6; col++) {
+      const box = mesh(new RoundedBoxGeometry(0.16, 0.28, 0.16, 2, 0.02), std(colors[(row * 6 + col) % colors.length]))
+      box.position.set(-0.62 + col * 0.19, 0.93 + row * 0.5, 0.05 + (Math.random() - 0.5) * 0.1)
+      g.add(box)
+    }
+  }
+  const glass = mesh(new THREE.BoxGeometry(1.3, 2.15, 0.02),
+    phys('#dfe7ea', { roughness: 0.03, transmission: 0.96, thickness: 0.1 }))
+  glass.position.set(-0.12, 1.65, 0.61)
+  g.add(glass)
+  // control column
+  const panel = mesh(new RoundedBoxGeometry(0.34, 2.6, 0.06, 3, 0.02), std('#7d1713'))
+  panel.position.set(0.66, 1.5, 0.6)
+  g.add(panel)
+  for (let i = 0; i < 12; i++) {
+    const btn = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.03, 12), std('#1c1c1c'))
+    btn.rotation.x = Math.PI / 2
+    btn.position.set(0.6 + (i % 2) * 0.12, 2.35 - Math.floor(i / 2) * 0.16, 0.64)
+    g.add(btn)
+  }
+  const display = mesh(new THREE.BoxGeometry(0.26, 0.12, 0.02), new THREE.MeshBasicMaterial({ color: '#1f5f3a' }))
+  display.position.set(0.66, 1.35, 0.64)
+  g.add(display)
+  const flap = mesh(new RoundedBoxGeometry(0.9, 0.4, 0.04, 2, 0.02), std('#141414'))
+  flap.position.set(-0.12, 0.42, 0.6)
+  flap.rotation.x = 0.25
+  g.add(flap)
+  return g
+}
+
+function microwave() {
+  const g = new THREE.Group()
+  const shell = std('#e6e4dc', { roughness: 0.4, metalness: 0.1 })
+  const body = mesh(new RoundedBoxGeometry(1.5, 0.86, 1.05, 4, 0.03), shell)
+  body.position.y = 0.5
+  g.add(body)
+  const cavity = mesh(new THREE.BoxGeometry(0.9, 0.66, 0.9), std('#c9c7bd', { roughness: 0.7 }))
+  cavity.position.set(-0.22, 0.5, 0.06)
+  g.add(cavity)
+  const plate = mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.02, 40), phys('#eee', { roughness: 0.1, transmission: 0.6 }))
+  plate.position.set(-0.22, 0.19, 0.06)
+  g.add(plate)
+  g.userData.turntable = plate
+  const doorFrame = mesh(new RoundedBoxGeometry(0.98, 0.78, 0.04, 3, 0.02), shell)
+  doorFrame.position.set(-0.22, 0.5, 0.53)
+  g.add(doorFrame)
+  const win = mesh(new THREE.BoxGeometry(0.78, 0.6, 0.02),
+    phys('#20211c', { roughness: 0.15, transmission: 0.35, thickness: 0.2, ior: 1.4 }))
+  win.position.set(-0.24, 0.5, 0.55)
+  g.add(win)
+  const handle = mesh(new RoundedBoxGeometry(0.06, 0.66, 0.06, 2, 0.02), std('#cfcdc4', { metalness: 0.4 }))
+  handle.position.set(0.24, 0.5, 0.57)
+  g.add(handle)
+  const cp = mesh(new RoundedBoxGeometry(0.42, 0.78, 0.04, 3, 0.02), std('#1c1c1c'))
+  cp.position.set(0.52, 0.5, 0.53)
+  g.add(cp)
+  const disp = mesh(new THREE.BoxGeometry(0.3, 0.1, 0.02), new THREE.MeshBasicMaterial({ color: '#4b7d2f' }))
+  disp.position.set(0.52, 0.78, 0.56)
+  g.add(disp)
+  for (let i = 0; i < 12; i++) {
+    const b = mesh(new RoundedBoxGeometry(0.08, 0.08, 0.02, 1, 0.01), std('#333'))
+    b.position.set(0.42 + (i % 3) * 0.1, 0.62 - Math.floor(i / 3) * 0.11, 0.56)
+    g.add(b)
+  }
+  return g
+}
+
+function filingCabinet() {
+  const g = new THREE.Group()
+  const metal = std('#9a9c99', { metalness: 0.55, roughness: 0.42 })
+  const body = mesh(new RoundedBoxGeometry(0.92, 1.6, 0.72, 3, 0.02), metal)
+  body.position.y = 0.82
+  g.add(body)
+  for (let i = 0; i < 4; i++) {
+    const out = i === 1 ? 0.34 : 0
+    const drawer = new THREE.Group()
+    const front = mesh(new RoundedBoxGeometry(0.84, 0.36, 0.04, 2, 0.015), metal)
+    front.position.z = 0.36 + out
+    drawer.add(front)
+    const handle = mesh(new RoundedBoxGeometry(0.34, 0.04, 0.05, 2, 0.015), std('#5a5c59', { metalness: 0.6 }))
+    handle.position.set(0, 0, 0.4 + out)
+    drawer.add(handle)
+    const label = mesh(new THREE.BoxGeometry(0.22, 0.09, 0.01), new THREE.MeshBasicMaterial({ color: '#f2f1ec' }))
+    label.position.set(0, 0.11, 0.385 + out)
+    drawer.add(label)
+    if (out > 0) {
+      for (const s of [1, -1]) {
+        const side = mesh(new THREE.BoxGeometry(0.02, 0.3, out), metal)
+        side.position.set(0.4 * s, 0, 0.36 + out / 2 - 0.02)
+        drawer.add(side)
+      }
+      const bot = mesh(new THREE.BoxGeometry(0.8, 0.02, out), metal)
+      bot.position.set(0, -0.15, 0.36 + out / 2 - 0.02)
+      drawer.add(bot)
+    }
+    drawer.position.y = 0.28 + i * 0.38
+    g.add(drawer)
+  }
+  return g
+}
+
+function fireExtinguisher() {
+  const g = new THREE.Group()
+  const red = std('#c81f17', { roughness: 0.4 })
+  const body = mesh(lathe([
+    [0.0, 0.0], [0.28, 0.02], [0.32, 0.1], [0.32, 1.2], [0.28, 1.36], [0.16, 1.44], [0.14, 1.5], [0.0, 1.5],
+  ]), red)
+  g.add(body)
+  const band = mesh(new THREE.CylinderGeometry(0.325, 0.325, 0.34, 40, 1, true),
+    std('#f2f1ea', { side: THREE.DoubleSide, roughness: 0.5 }))
+  band.position.y = 0.7
+  g.add(band)
+  const neck = mesh(new THREE.CylinderGeometry(0.09, 0.14, 0.16, 20), std('#1c1c1c'))
+  neck.position.y = 1.56
+  g.add(neck)
+  const lever = mesh(new RoundedBoxGeometry(0.06, 0.06, 0.5, 2, 0.02), std('#e2b400', { metalness: 0.3 }))
+  lever.position.set(0, 1.74, 0.12)
+  lever.rotation.x = -0.35
+  g.add(lever)
+  const pin = mesh(new THREE.TorusGeometry(0.05, 0.012, 8, 24), std('#c9c9c9', { metalness: 0.7 }))
+  pin.position.set(0.18, 1.7, 0)
+  pin.rotation.y = Math.PI / 2
+  g.add(pin)
+  const gauge = mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 20), new THREE.MeshBasicMaterial({ color: '#f2f1ea' }))
+  gauge.rotation.x = Math.PI / 2
+  gauge.position.set(0, 1.5, 0.2)
+  g.add(gauge)
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 1.5, 0.14),
+    new THREE.Vector3(0.34, 1.3, 0.2),
+    new THREE.Vector3(0.4, 0.7, 0.1),
+    new THREE.Vector3(0.34, 0.3, -0.1),
+    new THREE.Vector3(0.1, 0.2, -0.3),
+  ])
+  const hose = mesh(new THREE.TubeGeometry(curve, 40, 0.035, 10), std('#1c1c1c'))
+  g.add(hose)
+  const nozzle = mesh(new THREE.CylinderGeometry(0.05, 0.09, 0.2, 16), std('#2a2a2a'))
+  nozzle.position.set(0.08, 0.16, -0.34)
+  nozzle.rotation.z = 0.5
+  g.add(nozzle)
+  return g
+}
+
+function rubberDuck() {
+  const g = new THREE.Group()
+  const yellow = phys('#f4c614', { roughness: 0.3, clearcoat: 0.5, clearcoatRoughness: 0.3 })
+  const body = mesh(new THREE.SphereGeometry(0.42, 40, 32), yellow)
+  body.scale.set(1.25, 0.95, 1.0)
+  body.position.y = 0.4
+  g.add(body)
+  const tail = mesh(new THREE.ConeGeometry(0.16, 0.34, 20), yellow)
+  tail.position.set(-0.5, 0.6, 0)
+  tail.rotation.z = -1.1
+  g.add(tail)
+  const neck = mesh(new THREE.SphereGeometry(0.16, 24, 20), yellow)
+  neck.position.set(0.36, 0.62, 0)
+  g.add(neck)
+  const head = mesh(new THREE.SphereGeometry(0.26, 32, 26), yellow)
+  head.position.set(0.44, 0.86, 0)
+  g.add(head)
+  const beak = mesh(new THREE.ConeGeometry(0.13, 0.28, 18), std('#e8820f', { roughness: 0.45 }))
+  beak.position.set(0.68, 0.82, 0)
+  beak.rotation.z = -Math.PI / 2
+  beak.scale.set(1, 1, 0.6)
+  g.add(beak)
+  // sunglasses
+  const gl = new THREE.Group()
+  const lensMat = phys('#0a0a0a', { roughness: 0.08, metalness: 0.2, clearcoat: 1 })
+  for (const z of [-0.12, 0.12]) {
+    const lens = mesh(new THREE.SphereGeometry(0.1, 20, 16, 0, Math.PI * 2, 0, Math.PI / 2), lensMat)
+    lens.rotation.x = Math.PI / 2
+    lens.rotation.z = -0.2
+    lens.scale.set(1.25, 0.8, 1)
+    lens.position.set(0.58, 0.92, z)
+    gl.add(lens)
+    const arm = mesh(new RoundedBoxGeometry(0.24, 0.02, 0.02, 1, 0.008), lensMat)
+    arm.position.set(0.44, 0.95, z * 1.6)
+    gl.add(arm)
+  }
+  const bridge = mesh(new RoundedBoxGeometry(0.12, 0.02, 0.02, 1, 0.008), lensMat)
+  bridge.position.set(0.62, 0.95, 0)
+  gl.add(bridge)
+  g.add(gl)
+  g.userData.bob = g
+  g.scale.setScalar(1.1)
+  return g
+}
+
+// =========================================================================
+//  LAYOUT
+// =========================================================================
+const defs = [
+  ['cone de trânsito', 'não é porta. você atravessa mesmo assim.', trafficCone],
+  ['frango de padaria', 'gira no espeto, pra sempre', rotisserieChicken],
+  ['bebedouro', 'a bolha sobe às vezes', waterCooler],
+  ['relógio de pêndulo', 'o pêndulo bate de verdade', pendulumClock],
+  ['piscina de plástico', 'vazia pela metade', kiddiePool],
+  ['máquina de vending', 'ela te cospe no checkout', vendingMachine],
+  ['micro-ondas', 'o prato gira devagar', microwave],
+  ['arquivo de aço', 'uma gaveta fica aberta', filingCabinet],
+  ['extintor de incêndio', 'ninguém nunca usou', fireExtinguisher],
+  ['pato de borracha', 'o mascote. referência de escala.', rubberDuck],
+]
+
+const cols = 5
+const spread = 3.5
+const objects = []
+defs.forEach(([name, kind, build], i) => {
+  const o = build()
+  const col = i % cols
+  const row = Math.floor(i / cols)
+  o.position.set((col - (cols - 1) / 2) * spread, 0, row === 0 ? -spread * 0.6 : spread * 0.6)
+  o.userData.name = name
+  o.userData.kind = kind
+  o.userData.baseY = 0
+  scene.add(o)
+  objects.push(o)
+})
+
+// =========================================================================
+//  FOCUS / HUD
+// =========================================================================
+const nameEl = document.getElementById('name')
+const kindEl = document.getElementById('kind')
+const hud = document.getElementById('hud')
+let focusPos = new THREE.Vector3(0, 0.7, 0)
+let focusCam = new THREE.Vector3(0, 6, 15)
+let flying = false
+
+function frameAll() {
+  focusPos.set(0, 0.7, 0)
+  focusCam.set(0, 6.5, 15)
+  nameEl.textContent = 'todos'
+  kindEl.textContent = 'os nove objetos-porta + o pato'
+  setPressed('todos')
+  flying = true
+}
+function frameObject(o) {
+  focusPos.copy(o.position).add(new THREE.Vector3(0, 0.9, 0))
+  focusCam.copy(o.position).add(new THREE.Vector3(2.4, 1.7, 3.6))
+  nameEl.textContent = o.userData.name
+  kindEl.textContent = o.userData.kind
+  setPressed(o.userData.name)
+  flying = true
+}
+function setPressed(label) {
+  ;[...hud.children].forEach((b) => b.setAttribute('aria-pressed', String(b.textContent === label)))
+}
+
+const allBtn = document.createElement('button')
+allBtn.textContent = 'todos'
+allBtn.addEventListener('click', frameAll)
+hud.appendChild(allBtn)
+objects.forEach((o) => {
+  const b = document.createElement('button')
+  b.textContent = o.userData.name
+  b.addEventListener('click', () => frameObject(o))
+  hud.appendChild(b)
+})
+setPressed('todos')
+
+const ray = new THREE.Raycaster()
+addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.hud')) return
+  ray.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera)
+  const hit = ray.intersectObjects(objects, true)[0]
+  if (!hit) return
+  let o = hit.object
+  while (o && !objects.includes(o)) o = o.parent
+  if (o) frameObject(o)
+})
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight
+  camera.updateProjectionMatrix()
+  renderer.setSize(innerWidth, innerHeight)
+})
+
+// =========================================================================
+//  LOOP
+// =========================================================================
+const clock = new THREE.Clock()
+function tick() {
+  const t = clock.getElapsedTime()
+  const dt = clock.getDelta()
+
+  for (const o of objects) {
+    if (o.userData.spin) o.userData.spin.rotation.x = t * 0.7
+    if (o.userData.pendulum) o.userData.pendulum.rotation.z = Math.sin(t * 2.4) * 0.22
+    if (o.userData.turntable) o.userData.turntable.rotation.y = t * 0.6
+    if (o.userData.bob === o) o.position.y = Math.sin(t * 1.6) * 0.04
+  }
+
+  if (flying) {
+    camera.position.lerp(focusCam, 1 - Math.pow(0.002, dt))
+    controls.target.lerp(focusPos, 1 - Math.pow(0.002, dt))
+    if (camera.position.distanceTo(focusCam) < 0.05) flying = false
+  }
+  controls.update()
+  renderer.render(scene, camera)
+  requestAnimationFrame(tick)
+}
+tick()
+</script>

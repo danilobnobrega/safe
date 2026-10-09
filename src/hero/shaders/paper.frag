@@ -9,8 +9,13 @@ uniform float uTexAspect;  // texture width / height
 
 varying vec2 vUv;
 
+// integer-free, sin-free hash (Dave Hoskins' hash12): the old fract(sin(dot)*43758) lost
+// precision as the pixel coordinate grew and turned the grain into diagonal stripes across
+// the upper half of the screen
 float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(41.37, 289.13))) * 43758.545);
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
 }
 
 void main() {

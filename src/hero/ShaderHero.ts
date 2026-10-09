@@ -3,11 +3,17 @@ import { TTFLoader } from 'three/examples/jsm/loaders/TTFLoader.js'
 import { Font } from 'three/examples/jsm/loaders/FontLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
 import fullscreenVert from './shaders/fullscreen.vert'
-import fieldFrag from './shaders/field.frag'
 import paperFrag from './shaders/paper.frag'
 import galaxyFrag from './shaders/galaxy.frag'
 import beyondFrag from './shaders/beyond.frag'
 import { CrumbRain, CRUMB_VIEW_H } from '../ui/CrumbRain'
+import { FluidSim } from './FluidSim'
+import { RevealMask, REVEAL_GLSL } from './RevealMask'
+import { Drawn, DRAWN_GLSL } from './Drawn'
+import { TunnelObjects, WORLD_SCALE, PORTRAIT, SRC_MAT, type TunnelLook, type TunnelSet } from './TunnelObjects'
+import { realMaterial } from './ObjectLook'
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
+import { LetterSwap, type Slot } from './LetterSwap'
 
 const LOCKUP_FRACTION_DESKTOP = 0.82
 const LOCKUP_FRACTION_MOBILE = 0.92
@@ -26,11 +32,29 @@ const DOOR_FOV = 50
 const CRUMB_Z = 2.4
 /** extrusion depth of the sign letters, as a fraction of cap height */
 const LETTER_DEPTH = 0.17
+
+/** the material roulette: unrelated food materials the hovered surface cuts to, hard,
+ *  no blend, in random order, at random intervals — see uMatIndex in the letter
+ *  fragment shader. Index 0 (chrome) is the resting look and isn't in this pool; it's
+ *  what a fresh hover always starts on. Grows as more materials get built. */
+const FOOD_MATERIALS = [1] // 1 = guaraná soda
+// material roulette on hover — OFF while the noth.in reveal (RevealMask) is the
+// hover effect; the two fighting over the sign read as a glitch. Code kept intact.
+const ROULETTE_ENABLED = false
+/** how long (seconds) a material holds before the roulette cuts to the next one */
+const MAT_SWITCH_MIN = 1.2
+const MAT_SWITCH_MAX = 2.6
 /** how far the door-cubes rotate before freezing (radians). 2.129 = 122° */
 const SPIN_CAP = 2.129
 /** scroll fraction at which the rotation + recede freeze and the camera starts its
  *  forward dive */
 const FREEZE_P = 0.61
+// the reveal holes (RevealMask) fade out over the first stretch of door motion —
+// noth.in's 1-fade² splat falloff + faster dye bleed, fully cleared by here
+const REVEAL_FADE_P = 0.2
+// the doors count as shut (and the hover's on, on /hero-letters) until their eased swing
+// (doorE) moves them ~a pixel — progress itself creeps up well before anything visibly moves
+const DOORS_SHUT_E = 4e-4
 /** where the camera ends its dive — punched fully past the frozen cubes */
 const CAM_DIVE_END = -17
 /** section 2 — the photo tunnel behind the doors (Floema's recipe) */
@@ -39,8 +63,27 @@ const TUNNEL_REVEAL_P = 0.55 // photos start appearing one at a time just before
 const TUNNEL_STAGGER = 0.085 // seconds between each photo's fade-in (random order)
 const TUNNEL_RADIUS = 10 // photos ride a circle of this radius around the forward axis
 const TUNNEL_SPACING = 1.4 // z-gap between photos
+/** texts in the photo tunnel — Danilo writes these. Empty = photos only (and the wormhole is
+ *  free to charge from the start). Unlike the photos they don't drift on their own: they hang
+ *  in the tunnel one after another and only come toward the screen as the visitor scrolls (scroll
+ *  back, they go back). Until the last one has gone past, the wormhole can't charge; after it,
+ *  no more texts — just the photos, until the visitor scrolls hard enough to go through */
+const TUNNEL_TEXTS: string[] = [] // e.g. ['one line', 'two\nlines']
+const TEXT_FIRST = 16 // distance ahead of the camera of the first text, at rest
+const TEXT_GAP = 14 // between two texts
+const TEXT_PER_PX = 0.012 // world units of travel per px of wheel delta
+const TEXT_H = 1.15 // text height, world
+const TEXT_STEP_MAX = 2.4 // most one wheel notch moves the texts
+// TEST (/hero-tunnel-featured): the line-up, one at a time down the axis
+const FEATURED = ['tennis_racket', 'tennis_ball', 'tt_rackets', 'chess_clock', 'piece_king_white', 'running_shoe', 'stopwatch', 'trophies', 'keyboard']
+const FEAT_FIRST = 9 // distance ahead of the camera of the first, at rest
+const FEAT_GAP = 7 // between two (left / right alternate, so two can share the view)
+const FEAT_SIZE = 1.5 // each object's longest side, world
+const FEAT_X = 3.2 // how far off the axis, world
 const TUNNEL_FOG_FAR = 78 // photos dissolve into the dark by this distance (tunnel running)
 const TUNNEL_FOG_INTRO = 210 // fog pushed back during the one-by-one reveal so it reads
+const DRAWN_OBJ_SCALE = 16 // /hero-tunnel-drawn.html: metres -> tunnel units — kept at what it was when Danilo last saw it (the real tunnel's has grown since)
+const TUNNEL_OBJ_EVERY = 2 // an objects tunnel fills one slot in this many (72 slots -> 36 objects)
 const TUNNEL_PLANES = 72 // enough to fill the corridor + a buffer — denser, so it doesn't feel sparse at high speed
 const TUNNEL_IMG_SIZE = 1.5
 const TUNNEL_SCALE_RAND = 0.5
@@ -94,6 +137,19 @@ const BEYOND_SPEED = 55 // units/sec the camera travels along the path
 const TUNNEL_CH_COUNT = 4
 const TUNNEL_CH_DURATION = 3.0 // seconds per chapter
 const TUNNEL_CH_BLEND = 0.9 // seconds of crossfade into the next chapter, at the end of each
+
+// the approach — what plays after the chapter tunnel instead of fading to black:
+// a plain white void, a small dark ball far down the axis, camera falling toward
+// it while an enclosing background shader gains colour (the "tube" feeling, purely
+// a 2D pattern reacting to progress — steven.com's actual trick, reverse-engineered)
+// and, close in, a ring literally forms around the ball as the background goes dark.
+const APPROACH_START_Z = 140
+const APPROACH_END_Z = 3.2
+const APPROACH_TIME = 5.5 // seconds falling toward the ball
+const APPROACH_RING_START = 0.78 // fraction of APPROACH_TIME when the ring starts forming
+const APPROACH_BALL_R = 0.45
+const APPROACH_RING_R = 2.2
+const APPROACH_BG_R = 180 // the enclosing background sphere's radius
 // the hyperspace streak field (below) fades in across this charge window, so it
 // takes over right as the photos are dissolving out
 const WORM_STREAK_ON = 0.42
@@ -123,20 +179,103 @@ const WORM_STREAK_SPEED = 55 // base z advance, scaled up by charge/fall
  * leaves open from the centre and pushes the camera through into the space
  * beyond. The chrome-on-hover fades out as the doors open.
  */
+/** the sign's look: 'classic' (Tinos, chamfered gloss black — the main hero), 'matte' (Tinos,
+ *  straight cut, matte black — /hero-letters) */
+export type SignStyle = 'classic' | 'matte'
+
 export class ShaderHero {
   private renderer: THREE.WebGLRenderer
   private camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
   private clock = new THREE.Clock()
 
   private quad = new THREE.PlaneGeometry(2, 2)
-  private fieldScene = new THREE.Scene()
   private heroScene = new THREE.Scene()
-  private fieldMat: THREE.ShaderMaterial
   private heroMat: THREE.ShaderMaterial
+  /** the cursor's own GPU fluid sim (velocity + dye, real Navier-Stokes advection —
+   *  see FluidSim.ts) — feeds the letter shader's material-roulette materials their
+   *  local swirl/direction detail. Built once fonts+geometry are ready (needs the
+   *  shared quad + renderer), see init(). */
+  private fluid!: FluidSim
+  /** noth.in's hero mechanic: the cursor stirs a second, separate fluid whose dye
+   *  cuts hard-edged holes through the door face + letters, video underneath.
+   *  See RevealMask.ts. Fades out as the doors start to move. */
+  private reveal!: RevealMask
 
-  private rtA: THREE.WebGLRenderTarget
-  private rtB: THREE.WebGLRenderTarget
   private heroRT: THREE.WebGLRenderTarget
+  /** TEST (/hero-drawn.html): see Drawn.ts */
+  private drawn?: Drawn
+  private drawnCrumbs = false
+  /** drawn: "We do things / for people." as drawn letters, sunk in hatching until their face turns
+   *  into the light (the same gate as the plain ones' reveal) */
+  private drawnTagShade = { value: 1 }
+  private _drawnTagMat?: THREE.ShaderMaterial
+  private get drawnTagMat(): THREE.ShaderMaterial {
+    this._drawnTagMat ??= new THREE.ShaderMaterial({
+      uniforms: { ...this.drawnU, uShade: this.drawnTagShade },
+      vertexShader: `
+        varying vec3 vViewN;
+        varying vec4 vClip;
+        void main() {
+          vViewN = normalize(normalMatrix * normal);
+          vClip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_Position = vClip;
+        }`,
+      fragmentShader: `
+        precision highp float;
+        uniform float uShade;
+        varying vec3 vViewN;
+        varying vec4 vClip;
+        ${DRAWN_GLSL}
+        void main() {
+          vec2 suv = (vClip.xy / vClip.w) * 0.5 + 0.5;
+          float ink = max(drawnInk(suv, vViewN), drawnTone(suv, uShade));
+          gl_FragColor = vec4(mix(drawnPaper(suv), D_INK, ink), 1.0);
+        }`,
+    })
+    return this._drawnTagMat
+  }
+  private crumbReveal = false
+  private crumbPushHold = false
+  private crumbGrabCursor = false
+  private tunnelObjs?: TunnelObjects
+  private tunnelItems: THREE.Object3D[] = []
+  private tunnelFeatured = false
+  private tunnelRandom = false
+  private drawnScale = 16
+  private drawnEvery = 1
+  private tunnelHoverColor = false
+  private hoverRay = new THREE.Raycaster()
+  private hoverNdc = new THREE.Vector2()
+  private hovered: THREE.Object3D | null = null
+  private hoverEnv?: THREE.Texture
+  private tunnelReady = false
+  /** TEST (/hero-tunnel-real.html): the canvas drawn at this share of its resolution while the
+   *  tunnel is on screen (and back to full outside it) — frame rate for a little sharpness */
+  private tunnelResScale = 1
+  private resScaleNow = 1
+  private tunnelInst: { mesh: THREE.InstancedMesh; part: THREE.Matrix4; slots: number[] }[] = []
+  /** the objects get a scene of their own, drawn over the door scene into the same depth: none of
+   *  the door scene's five lights reach them (their own studio light is in their materials) —
+   *  every pixel of them was being lit six times */
+  private objScene = new THREE.Scene()
+  private tunnelSpin: { axis: THREE.Vector3; speed: number; a: number }[] = []
+  private tunnelPose = Array.from({ length: TUNNEL_PLANES }, () => new THREE.Matrix4())
+  private tunnelShow: boolean[] = []
+  private _tq = new THREE.Quaternion()
+  private _ts = new THREE.Vector3()
+  private _tm = new THREE.Matrix4()
+  private featured: THREE.Object3D[] = []
+  private grabRay = new THREE.Raycaster()
+  private grabNdc = new THREE.Vector2()
+  private grabShown = ''
+  private drawnU: Drawn['uniforms'] = {
+    uDOn: { value: 0 },
+    tNormalD: { value: null },
+    tDrawingD: { value: null },
+    tNoiseD: { value: null },
+    uDTime: { value: 0 },
+    uDRes: { value: new THREE.Vector2(1, 1) },
+  }
 
   private doorScene = new THREE.Scene()
   private doorCam: THREE.PerspectiveCamera
@@ -159,7 +298,32 @@ export class ShaderHero {
   private letterMat!: THREE.ShaderMaterial
   private lettersL = new THREE.Group()
   private lettersR = new THREE.Group()
-  private fonts?: { bold: Font; italic: Font }
+  private fonts?: { bold: Font; italic: Font; tag: Font }
+  /** the sign's look (see SignStyle) */
+  /** TEST (/hero-worm.html): falling through the wormhole lands on this page instead of the
+   *  chapter tunnel (the photo tunnel before it is unchanged) */
+  private wormTo?: string
+  private wormLeaving = false
+  /** files of the destination page to warm the cache with while the fall plays */
+  private wormPrefetch: string[] = []
+  private wormPrefetched = false
+  private sign: SignStyle = 'classic'
+  /** TEST (/hero-letters.html): the holes show the wordmark in other bodies instead of the video */
+  private letterSwap?: LetterSwap
+  /** TEST (/hero-letters.html): "We are" as separate letters that dodge the cursor (and are
+   *  never cut by the holes) */
+  private weAreDodge = false
+  /** the reveal pinned to the surfaces: each fragment looks the holes up where it sat with the
+   *  doors shut (rest camera x its own rest matrix), so as the cubes swing and recede the holes
+   *  and the letters in them ride along instead of staying put on the screen */
+  private restOn = { value: 0 }
+  private restVP = { value: new THREE.Matrix4() }
+  private restLive = true // doors shut: keep refreshing the rest pose
+  private weLetters: { mesh: THREE.Mesh; home: THREE.Vector3; off: THREE.Vector2; vel: THREE.Vector2; rot: number; rotV: number }[] = []
+  private weMat?: THREE.ShaderMaterial
+  private wePxToWorld = 0.001
+  private weLift = 0 // world z: GENERIC's front face minus "We are"'s
+  private _weV = new THREE.Vector3()
 
   /** the cookie/cracker pile — lives in doorScene, in front of the doors */
   readonly crumbs: CrumbRain
@@ -176,12 +340,32 @@ export class ShaderHero {
   private down = 0
   private pointerInside = false
 
+  // material roulette — while hovering, the wordmark surface cuts (hard, no blend)
+  // between unrelated materials at random intervals. 0 is the resting chrome-reveal
+  // look; anything else is picked from FOOD_MATERIALS. Resets to 0 whenever the
+  // cursor leaves the sign itself (not just the window), so every fresh hover starts
+  // on the familiar chrome. "Over the sign" is a real raycast against the letter
+  // meshes (signMeshes), not the page-wide pointerInside flag — that flag covers the
+  // whole window and would let the roulette run in the background whenever the mouse
+  // moves anywhere on the page, whether or not it's anywhere near the wordmark.
+  private matIndex = 0
+  private matTimer = 0
+  private matNextSwitch = 1.4
+  private raycaster = new THREE.Raycaster()
+  private signMeshes: THREE.Mesh[] = []
+  private overSign = false
+  private _splatPoint = new THREE.Vector2()
+  private _splatDir = new THREE.Vector2()
+
   private progress = 0
   private progressTarget = 0
   private manual = 0
 
   // section 2 — the photo tunnel
   private gallery = new THREE.Group()
+  private galleryTexts: THREE.Mesh[] = []
+  private textTravel = 0 // scroll-driven travel of the texts toward the camera
+  private textsDone = TUNNEL_TEXTS.length === 0 // the last text is behind us: the wormhole may charge
   private galleryPhotos: THREE.Mesh[] = []
   private streakTex?: THREE.CanvasTexture // plain thin light-dash texture, shared by the streak field
   private streakField?: THREE.InstancedMesh
@@ -216,8 +400,14 @@ export class ShaderHero {
   private inTunnel = false // past the wormhole — the chapter tunnel is running, fully automatic
   private tunnelSeqTime = 0 // seconds since the chapter tunnel started
   private tunnelEnded = false // one pass through all four chapters done — faded out, holding
+  private inApproach = false // past the chapter tunnel — falling toward the ball, ring forming
+  private approachTime = 0
+  private approachBall?: THREE.Mesh
+  private approachRings: THREE.Mesh[] = []
+  private approachBg?: THREE.Mesh
+  private approachBgMat?: THREE.ShaderMaterial
 
-  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number } = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number } = {}) {
     this.canvas = canvas
     // Size to the canvas's own laid-out box — and pass the RAW fractional size to
     // setSize. Rounding it here makes the backing store a pixel short of the box,
@@ -241,16 +431,66 @@ export class ShaderHero {
     const bw = Math.round(this.W * this.dpr)
     const bh = Math.round(this.H * this.dpr) // device-px size of the visible frame
 
-    const rtOpts: THREE.RenderTargetOptions = {
-      type: THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      depthBuffer: false,
-      stencilBuffer: false,
+    this.fluid = new FluidSim(this.renderer, this.quad)
+    // /hero-letters: a thicker brush (~x3.7 the splat's r = ~1.7x the stroke width: it's a gaussian)
+    this.reveal = new RevealMask(this.renderer, this.quad, !opts.revealLetters, opts.revealLetters ? 5.5e-4 : undefined)
+    // TEST (/hero-chalk.html): the holes' edges drawn in the garage's chalk
+    this.reveal.uniforms.uRevealChalk.value = opts.chalkEdge ? 1 : 0
+    this.reveal.uniforms.uRevealOrange.value = opts.chalkOrange ? 1 : 0
+    // TEST (/hero-drawn.html): the sign, "We are" and the crumbs drawn by the garage's hand, the
+    // door cubes outlined (see Drawn.ts)
+    if (opts.drawn) {
+      this.drawn = new Drawn(this.renderer, this.W, this.H, this.dpr)
+      this.drawnU = this.drawn.uniforms
+      // (/hero-drawn-real.html: the crumbs stay the real, coloured ones)
+      this.drawnCrumbs = opts.drawnCrumbs ?? true
     }
-    this.rtA = new THREE.WebGLRenderTarget(Math.max(2, Math.round(bw / 2)), Math.max(2, Math.round(bh / 2)), rtOpts)
-    this.rtB = new THREE.WebGLRenderTarget(Math.max(2, Math.round(bw / 2)), Math.max(2, Math.round(bh / 2)), rtOpts)
+    // TEST (/hero-drawn-hold.html): the cursor's holes show a drawn crumb's real colour; the
+    // cursor only pushes the pile while the button is held
+    this.crumbReveal = !!opts.crumbReveal
+    this.crumbPushHold = !!opts.crumbPushHold
+    // TEST (/hero-drawn-grab.html): the plain system grab hand over the pile, closed while held
+    this.crumbGrabCursor = !!opts.crumbGrabCursor
+    // TEST (/hero-tunnel-drawn.html, -real): the tunnel's photos replaced by Danilo's things
+    // TEST (/hero-tunnel-featured.html): instead, one of them at a time, big, down the middle
+    this.tunnelFeatured = !!opts.tunnelFeatured
+    this.tunnelResScale = opts.tunnelResScale ?? 1
+    // TEST (/hero-tunnel-portrait.html): objects anywhere on screen, not on the ring; Danilo in chalk
+    // hidden behind them; the one under the cursor in its real colours
+    this.tunnelRandom = !!opts.tunnelRandom
+    if (opts.tunnelHidden === 'abstract') PORTRAIT.uPortraitOn.value = 2
+    // (/hero-tunnel-hidden.html: the drawn objects the size and number of the real tunnel's, all
+    // there at once like it)
+    this.drawnScale = opts.drawnScale ?? DRAWN_OBJ_SCALE
+    this.drawnEvery = opts.drawnEvery ?? 1
+    this.tunnelHoverColor = !!opts.tunnelHoverColor
+    if (this.tunnelHoverColor) {
+      void new RGBELoader().loadAsync('/hero/tunnel/studio_1k.hdr').then((hdr) => {
+        hdr.mapping = THREE.EquirectangularReflectionMapping
+        const pm = new THREE.PMREMGenerator(this.renderer)
+        this.hoverEnv = pm.fromEquirectangular(hdr).texture
+        pm.dispose()
+      })
+    }
+    if (opts.tunnelPortrait) {
+      void new THREE.TextureLoader().loadAsync(opts.tunnelPortrait).then((t) => {
+        t.colorSpace = THREE.NoColorSpace
+        PORTRAIT.tPortrait.value = t
+        PORTRAIT.uPortraitAspect.value = (t.image as HTMLImageElement).width / (t.image as HTMLImageElement).height
+        PORTRAIT.uPortraitOn.value = 1
+      })
+    }
+    if (this.tunnelFeatured) this.textsDone = false // the wormhole waits for the last one
+    if (opts.tunnelObjects) this.tunnelObjs = new TunnelObjects(opts.tunnelObjects, this.drawnU as unknown as Record<string, THREE.IUniform>, this.renderer, opts.tunnelSet)
+    this.weAreDodge = !!opts.weAreDodge
+    this.sign = opts.sign ?? 'classic'
+    this.wormTo = opts.wormTo
+    this.wormPrefetch = opts.wormPrefetch ?? []
+    if (opts.revealLetters) {
+      this.restOn.value = 1
+      this.letterSwap = new LetterSwap(opts.letterSet)
+      this.reveal.setSource(this.letterSwap.texture, this.W / this.H) // screen-sized: no crop
+    }
     this.heroRT = new THREE.WebGLRenderTarget(bw, bh, {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
@@ -271,6 +511,11 @@ export class ShaderHero {
         // the tagline outer faces come up on uPhaseB (slower)
         uPhase: { value: 0 },
         uPhaseB: { value: 0 },
+        uRestOn: this.restOn,
+        uRestVP: this.restVP,
+        uRestModel: { value: new THREE.Matrix4() },
+        ...this.reveal.uniforms, // shared objects — updated once, seen by the letters too
+        ...this.drawnU,
       },
       vertexShader: `
         precision highp float;
@@ -279,12 +524,22 @@ export class ShaderHero {
         attribute vec3 position;
         attribute vec2 uv;
         attribute float aFaceKind; // 0 = GENERIC front, 1 = tagline outer, 2 = other
+        attribute vec3 normal;
+        uniform mat3 normalMatrix;
+        varying vec3 vViewN;
+        uniform mat4 uRestVP;
+        uniform mat4 uRestModel;
         varying vec2 vUv;
         varying float vKind;
+        varying vec4 vClip;
+        varying vec4 vRestClip;
         void main() {
+          vRestClip = uRestVP * uRestModel * vec4(position, 1.0);
           vUv = uv;
           vKind = aFaceKind;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vViewN = normalize(normalMatrix * normal);
+          vClip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_Position = vClip;
         }`,
       fragmentShader: `
         precision highp float;
@@ -293,8 +548,37 @@ export class ShaderHero {
         uniform float uPhaseB;
         varying vec2 vUv;
         varying float vKind;
+        varying vec4 vClip;
+        varying vec4 vRestClip;
+        uniform float uRestOn;
+        ${REVEAL_GLSL}
+        ${DRAWN_GLSL}
+        varying vec3 vViewN;
         void main() {
           vec3 tex = texture2D(map, vUv).rgb;
+          if (uDOn > 0.5) {
+            // drawn: the cubes are paper, outlined, hatched where they turn from the light — and
+            // their fall into shadow (the same light play as below) is hatching, not black
+            vec2 dsuv = (vClip.xy / vClip.w) * 0.5 + 0.5;
+            float shade = vKind < 0.5 ? uPhase : vKind < 1.5 ? 1.0 - uPhaseB : uPhase * 0.76;
+            // the cubes' shade: a smooth graphite smudge, no hatching — any hatch pattern over a face
+            // this big redraws or slides as it turns, and the whole surface seems to change
+            vec3 col = mix(drawnPaper(dsuv), D_INK, smoothstep(0.1, 1.0, shade) * 0.55);
+            col = mix(col, D_INK, drawnEdge(dsuv));
+            if (vKind < 0.5) {
+              vec2 suv = (vClip.xy / vClip.w) * 0.5 + 0.5;
+              if (uRestOn > 0.5) suv = (vRestClip.xy / vRestClip.w) * 0.5 + 0.5;
+              col = revealApply(col, suv);
+            }
+            gl_FragColor = vec4(col, 1.0);
+            return;
+          }
+          if (vKind < 0.5) {
+            // the GENERIC face is the top layer: fluid holes show the video through it
+            vec2 suv = (vClip.xy / vClip.w) * 0.5 + 0.5;
+            if (uRestOn > 0.5) suv = (vRestClip.xy / vRestClip.w) * 0.5 + 0.5;
+            tex = revealApply(tex, suv);
+          }
           float bright = 1.0;
           if (vKind < 0.5) {
             bright = mix(1.0, 0.03, uPhase);   // GENERIC front: full -> deep shadow (fast)
@@ -305,21 +589,6 @@ export class ShaderHero {
           }
           gl_FragColor = vec4(tex * bright, 1.0);
         }`,
-    })
-
-    this.fieldMat = new THREE.ShaderMaterial({
-      vertexShader: fullscreenVert,
-      fragmentShader: fieldFrag,
-      depthTest: false,
-      depthWrite: false,
-      uniforms: {
-        uPrev: { value: this.rtA.texture },
-        uPointer: { value: new THREE.Vector2(0.5, 0.5) },
-        uPrevPointer: { value: new THREE.Vector2(0.5, 0.5) },
-        uAspect: { value: this.W / this.H },
-        uDown: { value: 0 },
-        uActive: { value: 0 },
-      },
     })
 
     this.heroMat = new THREE.ShaderMaterial({
@@ -348,7 +617,6 @@ export class ShaderHero {
 
     this.buildLetterMaterial()
 
-    this.fieldScene.add(new THREE.Mesh(this.quad, this.fieldMat))
     this.heroScene.add(new THREE.Mesh(this.quad, this.heroMat))
 
     this.doorCam = new THREE.PerspectiveCamera(DOOR_FOV, this.W / this.H, 0.1, 200)
@@ -364,7 +632,12 @@ export class ShaderHero {
     // closed doors. Scale maps the crumb ortho view (2·CRUMB_VIEW_H tall) exactly
     // onto the door frustum at that z, so at rest it reads like a screen overlay;
     // once the camera dollies past CRUMB_Z the pile is behind it, out of frame.
-    this.crumbs = new CrumbRain({ parent: this.doorScene, crumbScale: opts.crumbScale })
+    this.crumbs = new CrumbRain({
+      parent: this.doorScene,
+      crumbScale: opts.crumbScale,
+      push: opts.crumbPush,
+      material: this.drawnCrumbs ? (src) => this.drawnCrumbMaterial(src.map) : undefined,
+    })
     const k = ((DOOR_CAM_Z - CRUMB_Z) * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))) / CRUMB_VIEW_H
     this.crumbs.stage.position.z = CRUMB_Z
     this.crumbs.stage.scale.setScalar(k)
@@ -373,6 +646,7 @@ export class ShaderHero {
     this.clearTargets()
     this.bakeWormhole()
     this.buildBeyondTunnel()
+    this.buildApproach()
     void this.loadFonts().then(() => this.layoutLetters())
 
     window.addEventListener('pointermove', this.onPointerMove)
@@ -459,6 +733,7 @@ export class ShaderHero {
       // in z so that coplanar strip can't z-fight as the doors split
       mesh.position.z = dir === 1 ? -0.008 : 0
       hinge.add(mesh)
+      this.pinRest(mesh)
       return mesh
     }
 
@@ -527,6 +802,28 @@ export class ShaderHero {
    * tunnel arms: fog closes to TUNNEL_FOG_FAR, a warp burst eases to an idle drift
    * (+ scroll boost), and a plane that passes the camera recycles to the far end.
    */
+  /** a tunnel text as a texture: Tinos italic, off-white, on transparent, sized to the text */
+  private tunnelTextTexture(text: string): THREE.CanvasTexture {
+    const px = 96
+    const font = `italic 400 ${px}px Tinos, "Times New Roman", serif`
+    const cnv = document.createElement('canvas')
+    const ctx = cnv.getContext('2d')!
+    ctx.font = font
+    const lines = text.split('\n')
+    const w = Math.ceil(Math.max(...lines.map((l) => ctx.measureText(l).width))) + px
+    cnv.width = w
+    cnv.height = Math.ceil(lines.length * px * 1.2 + px * 0.6)
+    ctx.font = font
+    ctx.fillStyle = '#f2f0ea'
+    ctx.textBaseline = 'top'
+    lines.forEach((l, i) => ctx.fillText(l, px / 2, px * 0.3 + i * px * 1.2))
+    const tex = new THREE.CanvasTexture(cnv)
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.generateMipmaps = false
+    tex.minFilter = THREE.LinearFilter
+    return tex
+  }
+
   private buildGallery(): void {
     let seed = 0x9e37
     const rng = (): number => {
@@ -618,6 +915,18 @@ export class ShaderHero {
       this.gallery.add(m)
     }
 
+    // the texts: one after another down the tunnel's axis, alternating a little left and right
+    TUNNEL_TEXTS.forEach((text, i) => {
+      const tex = this.tunnelTextTexture(text)
+      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0 }))
+      const aspect = tex.image.width / tex.image.height
+      m.scale.set(TEXT_H * aspect, TEXT_H, 1)
+      m.userData.side = i % 2 ? 1 : -1
+      m.visible = false
+      this.galleryTexts.push(m)
+      this.gallery.add(m)
+    })
+
     // the hyperspace streak field — hundreds of tiny dashes scattered around the
     // axis (their own radii, not the photo ring), each a thin sliver of streakTex.
     // Length is driven by radius (far off-axis = long streak, near-centre = a dot)
@@ -644,6 +953,73 @@ export class ShaderHero {
 
     this.gallery.visible = false
     this.doorScene.add(this.gallery)
+    // TEST: each photo's slot carries one of Danilo's things instead (the plane itself unseen —
+    // its opacity still drives the object's appearing)
+    // (an objects tunnel never shows the photo planes — not even while its models load)
+    if (this.tunnelObjs) for (const m of this.galleryPhotos) (m.material as THREE.MeshBasicMaterial).visible = false
+    void this.tunnelObjs?.whenReady().then(() => {
+      const objs = this.tunnelObjs!
+      if (this.tunnelFeatured) {
+        // no photos in this tunnel — only the objects (and the texts, down the middle)
+        for (const m of this.galleryPhotos) (m.material as THREE.MeshBasicMaterial).visible = false
+        for (const name of FEATURED) {
+          const o = objs.makeNamed(name)
+          if (!o) continue
+          const size = new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3())
+          o.userData.k = FEAT_SIZE / Math.max(size.x, size.y, size.z) // each shown at one size
+          o.userData.flatF = size.y < 0.45 * Math.max(size.x, size.z)
+          o.visible = false
+          o.traverse((c) => {
+            const m = (c as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined
+            if (m) m.transparent = true
+          })
+          this.gallery.add(o)
+          this.featured.push(o)
+        }
+        return
+      }
+      if (objs.look === 'real') {
+        this.buildTunnelInstances(objs)
+        return
+      }
+      this.galleryPhotos.forEach((m, i) => {
+        ;(m.material as THREE.MeshBasicMaterial).visible = false
+        if (i % this.drawnEvery) return
+        const s0 = m.userData.s0 as THREE.Vector3
+        const base = Math.max(s0.x, s0.y)
+        s0.set(base, base, 1)
+        m.scale.copy(s0)
+        const o = objs.make(i)
+        // each tumbles on its own axis, at its own pace — a real turn, so the light runs over it
+        // and its sides come round (a slow spin about the vertical only read as a flat cut-out)
+        const r = (k: number) => ((i * k) % 1) - 0.5
+        o.userData.axis = new THREE.Vector3(r(0.618) * 1.6, 1, r(0.377) * 1.6).normalize()
+        o.userData.spin = (i % 2 ? 1 : -1) * (0.9 + ((i * 0.618) % 1) * 0.8) // rad/s
+        o.userData.ry = (i * 2.399) % (Math.PI * 2)
+        o.visible = false
+        // NOT a child of the slot: the slot is scaled unevenly (and stretched by the charge), and
+        // a tumbling child inside it gets squashed and stretched as it turns. It only follows
+        // the slot's position, and fades with the slot's opacity at its own fixed size
+        o.userData.slot = m
+        if (this.tunnelRandom) {
+          // anywhere across the tunnel's cross-section (seeded per slot), not on the ring
+          // (a stratified spread: the slot's index walks a golden-ratio sequence over the section, so
+          // they cover it evenly instead of bunching — plus a little jitter)
+          const u = (i * 0.6180339887) % 1
+          const v = (i * 0.7548776662) % 1
+          const j = (k: number) => ((Math.sin((i + 1) * k) * 43758.5453) % 1) * 0.12
+          o.userData.rx = ((u + j(12.9898)) % 1 * 2 - 1) * 8.5
+          o.userData.ryy = ((v + j(78.233)) % 1 * 2 - 1) * 4.8
+        }
+        o.scale.setScalar(this.drawnScale)
+        o.traverse((c) => {
+          const mat = (c as THREE.Mesh).material as THREE.Material | undefined
+          if (mat) mat.transparent = true
+        })
+        this.gallery.add(o)
+        this.tunnelItems.push(o)
+      })
+    })
     this.doorScene.fog = new THREE.Fog(0x000000, 0.1, TUNNEL_FOG_INTRO)
 
     // the wormhole — a spiral-galaxy disc (procedurally baked in bakeWormhole()).
@@ -802,33 +1178,139 @@ export class ShaderHero {
     mat.uniforms.uBlend.value = blend
     mat.uniforms.uTime.value += dt
 
-    if (!done) {
-      // travel the real curve — the winding is genuine geometry, not a texture
-      // trick, so the camera always has a wall ahead of it (never a straight,
-      // wall-less sightline down the axis) and actually turns with the path
-      this.tunnelT = (this.tunnelT + (BEYOND_SPEED * dt) / this.beyondCurveLen) % 1
-      const pos = curve.getPointAt(this.tunnelT)
-      const ahead = curve.getPointAt((this.tunnelT + 0.006) % 1)
-      this.doorCam.position.copy(pos)
-      this.doorCam.up.set(0, 1, 0)
-      this.doorCam.lookAt(ahead)
-      return
-    }
+    // travel the real curve — the winding is genuine geometry, not a texture
+    // trick, so the camera always has a wall ahead of it (never a straight,
+    // wall-less sightline down the axis) and actually turns with the path.
+    // tunnelT freezes once done (no more advancing), but position/lookAt are
+    // re-applied every frame regardless — frame() sets doorCam.position from the
+    // old hero camera formula before calling this, every frame, so we always have
+    // to override it or the camera snaps back outside the tube the moment we stop
+    // updating it here.
+    if (!done) this.tunnelT = (this.tunnelT + (BEYOND_SPEED * dt) / this.beyondCurveLen) % 1
+    const pos = curve.getPointAt(this.tunnelT)
+    const ahead = curve.getPointAt((this.tunnelT + 0.006) % 1)
+    this.doorCam.position.copy(pos)
+    this.doorCam.up.set(0, 1, 0)
+    this.doorCam.lookAt(ahead)
+    if (!done) return
 
-    // one pass done — it actually ends here (no infinite loop): fade to black and
-    // hold. The other side, past this fade, hasn't been designed yet.
+    // one pass done — a quick white flash (not black: the approach opens on a
+    // white void), then hand off to the approach.
     const flash = this.wormFlash
     if (flash) {
       flash.visible = true
-      ;(flash.material as THREE.MeshBasicMaterial).color.set(0x000000)
+      ;(flash.material as THREE.MeshBasicMaterial).color.set(0xffffff)
       flash.quaternion.copy(this.doorCam.quaternion)
       flash.position.set(this.doorCam.position.x, this.doorCam.position.y, this.doorCam.position.z - 0.5)
       const endT = this.tunnelSeqTime - onePass
-      ;(flash.material as THREE.MeshBasicMaterial).opacity = THREE.MathUtils.clamp(endT / 1.2, 0, 1)
-      if (!this.tunnelEnded && endT >= 1.2) {
+      ;(flash.material as THREE.MeshBasicMaterial).opacity = THREE.MathUtils.clamp(endT / 0.8, 0, 1)
+      if (!this.tunnelEnded && endT >= 0.8) {
         this.tunnelEnded = true
-        console.info('[hero] chapter tunnel: ended — other side TBD')
+        flash.visible = false
+        tube.visible = false
+        this.inApproach = true
+        this.approachTime = 0
+        console.info('[hero] chapter tunnel: ended — falling toward the ball')
       }
+    }
+  }
+
+  /** the approach: a real winding shader-tube gave way to a plain white void.
+   *  The camera falls while an enclosing background shader gains colour — the
+   *  "tube" feeling, purely a 2D pattern reacting to progress (steven.com's
+   *  actual trick, reverse-engineered: no geometry changes shape, a background
+   *  layer just gets more saturated as you approach) — and close in, a ring
+   *  literally forms around the ball as the background goes dark. */
+  private buildApproach(): void {
+    this.approachBgMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: { uProgress: { value: 0 }, uTime: { value: 0 } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        precision highp float;
+        varying vec2 vUv;
+        uniform float uProgress;
+        uniform float uTime;
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 345.45));
+          p += dot(p, p + 34.345);
+          return fract(p.x * p.y);
+        }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+                     mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+        }
+        void main() {
+          // white void -> near-black, only in the final stretch
+          vec3 base = mix(vec3(0.97, 0.965, 0.95), vec3(0.03, 0.03, 0.04), smoothstep(0.72, 1.0, uProgress));
+          // thin undulating bands, wiggling with noise — the "tube" feeling
+          float band = vUv.y * 40.0;
+          float wiggle = (vnoise(vec2(vUv.x * 6.0, uTime * 0.15)) - 0.5) * 2.0;
+          float line = smoothstep(0.05, 0.0, abs(fract(band + wiggle * 0.6) - 0.5) - 0.46);
+          float strength = smoothstep(0.05, 0.55, uProgress); // only shows up once falling begins
+          vec3 lineColor = mix(vec3(0.40, 0.60, 0.95), vec3(1.0, 0.55, 0.25), smoothstep(0.30, 0.9, uProgress));
+          vec3 col = base + lineColor * line * strength * 0.8;
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    })
+    this.approachBg = new THREE.Mesh(new THREE.SphereGeometry(APPROACH_BG_R, 32, 32), this.approachBgMat)
+    this.approachBg.visible = false
+    this.approachBg.frustumCulled = false
+    this.doorScene.add(this.approachBg)
+
+    this.approachBall = new THREE.Mesh(
+      new THREE.SphereGeometry(APPROACH_BALL_R, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0x0c0c0d }),
+    )
+    this.approachBall.visible = false
+    this.doorScene.add(this.approachBall)
+
+    const ringMat = (): THREE.MeshBasicMaterial =>
+      new THREE.MeshBasicMaterial({ color: 0xf2f0ea, transparent: true, opacity: 0 })
+    const outer = new THREE.Mesh(new THREE.TorusGeometry(APPROACH_RING_R, 0.045, 16, 96), ringMat())
+    outer.rotation.x = 0.32
+    const inner = new THREE.Mesh(new THREE.TorusGeometry(APPROACH_RING_R * 0.58, 0.032, 16, 80), ringMat())
+    inner.rotation.x = -0.22
+    inner.rotation.y = 0.2
+    this.approachRings = [outer, inner]
+    for (const r of this.approachRings) {
+      r.visible = false
+      this.doorScene.add(r)
+    }
+  }
+
+  /** falling toward the ball, fully automatic — see buildApproach() for the idea */
+  private stepApproach(dt: number): void {
+    const bg = this.approachBg
+    const ball = this.approachBall
+    if (!bg || !ball) return
+    bg.visible = true
+    ball.visible = true
+
+    this.approachTime += dt
+    const p = THREE.MathUtils.clamp(this.approachTime / APPROACH_TIME, 0, 1)
+    const ease = 1 - Math.pow(1 - p, 3) // falls fast, settles gently right at the ball
+    const camZ = THREE.MathUtils.lerp(APPROACH_START_Z, APPROACH_END_Z, ease)
+    this.doorCam.position.set(0, 0, camZ)
+    this.doorCam.up.set(0, 1, 0)
+    this.doorCam.lookAt(0, 0, 0)
+    this.setDoorFov(DOOR_FOV)
+
+    this.approachBgMat!.uniforms.uProgress.value = p
+    this.approachBgMat!.uniforms.uTime.value += dt
+
+    const ringP = THREE.MathUtils.clamp((p - APPROACH_RING_START) / (1 - APPROACH_RING_START), 0, 1)
+    const ringE = ringP * ringP * (3 - 2 * ringP)
+    for (const r of this.approachRings) {
+      r.visible = ringE > 0.003
+      ;(r.material as THREE.MeshBasicMaterial).opacity = ringE
+      r.scale.setScalar(THREE.MathUtils.lerp(0.7, 1, ringE))
+      r.rotation.z += dt * 0.08
     }
   }
 
@@ -892,35 +1374,75 @@ export class ShaderHero {
     this.letterMat = new THREE.ShaderMaterial({
       side: THREE.DoubleSide, // cut caps have arbitrary winding; also hides any thin seam crack
       uniforms: {
-        uField: { value: this.rtA.texture },
+        uDye: { value: this.fluid.dyeTexture },
+        uVelocity: { value: this.fluid.velocityTexture },
         uOpen: { value: 0 },
         uLight: { value: new THREE.Vector3(0.35, 0.55, 0.75).normalize() },
         uPhase: { value: 0 }, // "We are GENERIC" falls into shadow with its face
+        uMatIndex: { value: 0 }, // 0 = resting metal; >0 = a FOOD_MATERIALS look
+        uTime: { value: 0 },
+        uNoReveal: { value: 0 },
+        uFinish: { value: this.sign === 'matte' ? 1 : 0 }, // gloss / matte
+        uRestOn: this.restOn,
+        uRestVP: this.restVP,
+        uRestModel: { value: new THREE.Matrix4() },
+        ...this.reveal.uniforms,
+        ...this.drawnU,
       },
       vertexShader: `
+        uniform mat4 uRestVP;
+        uniform mat4 uRestModel;
         varying vec3 vViewN;
         varying vec4 vClip;
+        varying vec4 vRestClip;
         void main() {
+          vRestClip = uRestVP * uRestModel * vec4(position, 1.0);
           vViewN = normalize(normalMatrix * normal);
           vClip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
           gl_Position = vClip;
         }`,
       fragmentShader: `
         precision highp float;
-        uniform sampler2D uField;
+        uniform sampler2D uDye;
+        uniform sampler2D uVelocity;
         uniform float uOpen;
         uniform vec3 uLight;
         uniform float uPhase;
+        uniform float uMatIndex;
+        uniform float uTime;
+        uniform float uNoReveal;
+        uniform float uFinish;
+        uniform float uRestOn;
         varying vec3 vViewN;
         varying vec4 vClip;
+        varying vec4 vRestClip;
+        ${REVEAL_GLSL}
+        ${DRAWN_GLSL}
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 345.45));
+          p += dot(p, p + 34.345);
+          return fract(p.x * p.y);
+        }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+                     mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+        }
 
         void main() {
           vec3 n = normalize(vViewN);
           vec2 suv = (vClip.xy / vClip.w) * 0.5 + 0.5;
 
+          // dye = how much of the cursor's fluid trail has flowed here (real
+          // Navier-Stokes advection — see FluidSim.ts), velocity = the fluid's own
+          // current motion there — both feed the roulette's local swirl detail below.
           float heat = 0.0;
+          vec2 vel = vec2(0.0);
           if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0) {
-            heat = clamp(texture2D(uField, suv).r, 0.0, 1.0);
+            heat = clamp(texture2D(uDye, suv).r, 0.0, 1.0);
+            vel = texture2D(uVelocity, suv).xy;
           }
 
           float up = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
@@ -930,18 +1452,319 @@ export class ShaderHero {
           // rest: near-black painted metal, volume readable from the gradient + edges
           vec3 rest = mix(vec3(0.014), vec3(0.11), smoothstep(0.12, 0.96, up));
           rest += spec * 0.55 + fres * 0.05;
+          if (uFinish > 0.5) {
+            // matte: no highlight at all, the volume only from how the faces turn
+            rest = mix(vec3(0.016), vec3(0.075), smoothstep(0.1, 0.95, up)) + fres * 0.015;
+          }
 
-          // hot: liquid chrome
-          vec3 chrome = mix(vec3(0.05, 0.06, 0.08), vec3(0.95, 0.97, 1.0), smoothstep(0.10, 0.55, up));
-          chrome = mix(chrome, vec3(1.0), smoothstep(0.62, 0.66, up));
-          chrome += fres * 0.45 + spec;
+          vec3 col;
 
-          float k = smoothstep(0.06, 0.5, heat) * (1.0 - uOpen);
-          vec3 col = mix(rest, chrome, k) * mix(1.0, 0.05, uPhase); // darken into shadow
+          if (uMatIndex < 0.5) {
+            // resting: plain painted metal, no cursor-follow glow — the wordmark only
+            // reacts when the material roulette below cuts it over, all at once.
+            col = rest;
+          } else {
+            // FOOD_MATERIALS[0] — guaraná soda. GLOBAL cut: the instant this is active
+            // the WHOLE sign is soda, no patch, no mask — a real hard cut of the whole
+            // object's material. The fluid's own velocity/dye only add LOCAL detail on
+            // top — a denser, faster burst of bubbles that follows the real swirl —
+            // the same way the base material would already read without it.
+            float spd = length(vel);
+            vec2 dir = spd > 1e-4 ? vel / spd : vec2(0.0);
+
+            // deliberately NOT the metal's formula (near-black gradient + weak fresnel)
+            // — a wet/glossy surface reads as a different material only if its value
+            // range, fresnel response and highlight shape are all categorically
+            // different, not just a different hue on the same recipe.
+            vec3 liquid = mix(vec3(0.34, 0.09, 0.02), vec3(0.86, 0.4, 0.11), smoothstep(0.05, 0.95, up));
+            liquid = mix(liquid, vec3(1.0, 0.93, 0.8), pow(fres, 1.1) * 0.85); // wet rim, near-white at grazing angle
+            float spec2 = pow(max(dot(reflect(-uLight, n), normalize(vec3(dir * 0.7, 1.0))), 0.0), 90.0);
+            liquid += spec2 * 1.3;
+
+            // ambient bubbles drift on their own everywhere; the drag adds a hotter,
+            // denser burst that follows the cursor's own direction and speed
+            vec2 ambientUv = suv * 42.0 + vec2(0.0, uTime * 0.12);
+            float ambientBub = smoothstep(0.88, 0.97, vnoise(ambientUv)) * 0.35;
+            vec2 dragUv = suv * 42.0 - dir * uTime * 2.2;
+            float dragBub = smoothstep(0.8, 0.93, vnoise(dragUv)) * heat * (0.4 + spd * 2.5);
+            liquid += (ambientBub + dragBub) * vec3(0.85, 0.55, 0.28);
+
+            col = mix(rest, liquid, 1.0 - uOpen); // still fades back to metal as the doors open
+          }
+
+          // drawn (TEST): paper with graphite outline + hatching instead of matte black
+          if (uDOn > 0.5) col = drawnColor(suv, n);
+
+          // the letters are part of the top layer too — the holes cut straight through them
+          // (except "We are" when it dodges the cursor instead: uNoReveal)
+          vec2 rsuv = uRestOn > 0.5 ? (vRestClip.xy / vRestClip.w) * 0.5 + 0.5 : suv;
+          if (uNoReveal < 0.5)
+          col = revealApply(col, rsuv);
+
+          if (uDOn > 0.5) col = mix(col, D_INK, drawnTone(suv, uPhase)); // drawn: shadow as hatching
+          else col *= mix(1.0, 0.05, uPhase); // darken into shadow
           gl_FragColor = vec4(col, 1.0);
         }`,
     })
 
+  }
+
+  /** TEST (/hero-tunnel-featured): the line-up down the axis, brought forward only by scroll (the
+   *  texts' travel); each grows in out of the dark, turns slowly in front of the camera, and goes
+   *  past it. Once the last is behind us the wormhole may charge (textsDone) */
+  private stepFeatured(dt: number, camZ: number, armed: boolean): void {
+    const list = this.featured
+    if (!list.length) return
+    const reveal = THREE.MathUtils.smoothstep(this.revealClock, 0.3, 1.0)
+    list.forEach((o, i) => {
+      const ahead = FEAT_FIRST + i * FEAT_GAP - this.textTravel
+      const fadeIn = 1 - THREE.MathUtils.smoothstep(ahead, FEAT_GAP * 1.4, FEAT_GAP * 2.0)
+      const fadeOut = THREE.MathUtils.smoothstep(ahead, 1.5, 3.5)
+      const a = armed && !this.textsDone ? reveal * fadeIn * fadeOut : 0
+      o.visible = a > 0.003
+      if (!o.visible) return
+      // off to the sides, alternating, clear of the middle (the texts' place)
+      const side = i % 2 ? 1 : -1
+      o.position.set(side * FEAT_X, (i % 3 === 1 ? 0.9 : -0.7), camZ - ahead)
+      const k = o.userData.k as number
+      o.scale.setScalar(k * (0.85 + 0.15 * a))
+      o.userData.t = ((o.userData.t as number) ?? 0) + dt
+      const t = o.userData.t as number
+      // a slow turn about its own vertical, a gentle sway — flat things tipped up to be seen
+      o.rotation.set((o.userData.flatF ? 0.95 : 0.12) + Math.sin(t * 0.6) * 0.08, t * 0.45 + i, Math.sin(t * 0.4) * 0.05, 'XYZ')
+      o.traverse((c) => {
+        const m = (c as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined
+        if (m) m.opacity = a
+      })
+    })
+    if (!this.textsDone && FEAT_FIRST + (list.length - 1) * FEAT_GAP - this.textTravel < 1.5) {
+      this.textsDone = true
+      console.info('[hero] featured objects: done — the wormhole can charge')
+    }
+  }
+
+  /** the real look, built to run at frame rate: every copy of an object is drawn at once
+   *  (one InstancedMesh per part of each object), opaque (no transparency sorting), shown and
+   *  hidden by its size, sunk into the dark by the scene's fog — one-by-one meshes, each see-through
+   *  for its fade, had halved the frame rate */
+  private buildTunnelInstances(objs: TunnelObjects): void {
+    const n = this.galleryPhotos.length
+    const kinds = objs.count
+    this.tunnelSpin = Array.from({ length: n }, (_, i) => {
+      const r = (k: number) => ((i * k) % 1) - 0.5
+      return {
+        axis: new THREE.Vector3(r(0.618) * 1.6, 1, r(0.377) * 1.6).normalize(),
+        speed: (i % 2 ? 1 : -1) * (0.9 + ((i * 0.618) % 1) * 0.8),
+        a: (i * 2.399) % (Math.PI * 2),
+      }
+    })
+    // only every TUNNEL_OBJ_EVERY-th slot carries an object: fewer of them on screen at once
+    const used = Array.from({ length: n }, (_, i) => i).filter((i) => i % TUNNEL_OBJ_EVERY === 0)
+    for (let k = 0; k < kinds; k++) {
+      const slots: number[] = []
+      for (let j = k; j < used.length; j += kinds) slots.push(used[j])
+      for (const part of objs.parts(k)) {
+        // (debug: ?flat swaps in an unlit material, to tell geometry cost from shading cost)
+        const mat = (new URLSearchParams(location.search).has('flat') ? new THREE.MeshBasicMaterial({ map: (part.material as THREE.MeshStandardMaterial).map }) : part.material) as THREE.MeshStandardMaterial
+        if (!mat.transparent) {
+          mat.opacity = 1
+          mat.depthWrite = true
+        }
+        mat.fog = true
+        const mesh = new THREE.InstancedMesh(part.geometry, mat, slots.length)
+        mesh.frustumCulled = false
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        this.objScene.add(mesh)
+        this.tunnelInst.push({ mesh, part: part.matrix, slots })
+      }
+    }
+    for (const m of this.galleryPhotos) (m.material as THREE.MeshBasicMaterial).visible = false
+    // they're loaded long before the doors open (from the page's first second): get them onto the
+    // GPU now too — shaders compiled, textures uploaded — so the tunnel's first frame doesn't stall
+    this.renderer.compile(this.objScene, this.doorCam)
+    this.objScene.traverse((o) => {
+      const mats = (o as THREE.Mesh).material
+      for (const mat of Array.isArray(mats) ? mats : mats ? [mats] : []) {
+        for (const v of Object.values(mat)) if ((v as THREE.Texture)?.isTexture) this.renderer.initTexture(v as THREE.Texture)
+      }
+    })
+    console.info('[hero] tunnel objects ready on the GPU', Math.round(performance.now()), 'ms')
+    this.tunnelReady = true
+  }
+
+  private stepTunnelInstances(dt: number): void {
+    const pose = this.tunnelPose
+    const show = this.tunnelShow
+    // only what can be seen is drawn: revealed, in front of the camera, and nearer than the fog's
+    // far edge (beyond it the fog has already made it black) — half the ring was out there
+    const fog = this.doorScene.fog as THREE.Fog | null
+    const far = fog ? fog.far : Infinity
+    const camZ = this.doorCam.position.z
+    for (let i = 0; i < this.galleryPhotos.length; i++) {
+      const sp = this.tunnelSpin[i]
+      sp.a += dt * sp.speed
+      const m = this.galleryPhotos[i]
+      // every object is there the moment the tunnel shows — none pops in late, one by one, the way
+      // the photos were staggered in. The slot's opacity is undone of that stagger and keeps only
+      // the rest: the wormhole charge and the fall, which still shrink them away
+      const op = (m.material as THREE.MeshBasicMaterial).opacity
+      const at = m.userData.revealAt as number
+      const staggered = THREE.MathUtils.smoothstep(this.revealClock, at, at + 0.4)
+      const rest = this.revealClock < 0 ? 0 : staggered > 0.001 ? Math.min(1, op / staggered) : this.inWormhole ? op : 1
+      const e = rest <= 0.002 ? 0 : 1 - (1 - rest) ** 3
+      const ahead = camZ - m.position.z
+      show[i] = e > 0 && ahead > -1 && ahead < far + 2
+      if (!show[i]) continue
+      this._tq.setFromAxisAngle(sp.axis, sp.a)
+      this._ts.setScalar(e * WORLD_SCALE)
+      pose[i].compose(m.position, this._tq, this._ts)
+    }
+    for (const inst of this.tunnelInst) {
+      let n = 0
+      for (const slot of inst.slots) {
+        if (!show[slot]) continue
+        inst.mesh.setMatrixAt(n++, this._tm.multiplyMatrices(pose[slot], inst.part))
+      }
+      inst.mesh.count = n
+      inst.mesh.instanceMatrix.needsUpdate = true
+    }
+  }
+
+  /** TEST (/hero-tunnel-*): each slot's object follows its plane's opacity — it grows in where the
+   *  photo faded in, shrinks away where it faded — and turns slowly on its own axis, counter to
+   *  the slot's roll so it stays upright */
+  /** (/hero-tunnel-portrait) the object under the cursor shows its real colours (the drawn
+   *  material swapped for the model's own; back when the cursor leaves) */
+  private stepTunnelHover(): void {
+    if (!this.tunnelHoverColor || !this.tunnelItems.length) return
+    let hit: THREE.Object3D | null = null
+    if (this.pointerInside && this.gallery.visible) {
+      this.hoverNdc.set(this.target.x * 2 - 1, this.target.y * 2 - 1)
+      this.hoverRay.setFromCamera(this.hoverNdc, this.doorCam)
+      const hits = this.hoverRay.intersectObjects(this.tunnelItems.filter((o) => o.visible), true)
+      if (hits.length) {
+        let o: THREE.Object3D | null = hits[0].object
+        while (o && !this.tunnelItems.includes(o)) o = o.parent
+        hit = o
+      }
+    }
+    if (hit === this.hovered) return
+    const swap = (o: THREE.Object3D, real: boolean) =>
+      o.traverse((c) => {
+        const m = c as THREE.Mesh
+        if (!m.isMesh) return
+        if (!m.userData.drawnMat) m.userData.drawnMat = m.material
+        if (real) {
+          m.userData.realMat ??= realMaterial(SRC_MAT.get(m.geometry)!, this.hoverEnv ?? null)
+          m.material = m.userData.realMat as THREE.Material
+        } else m.material = m.userData.drawnMat as THREE.Material
+      })
+    if (this.hovered) swap(this.hovered, false)
+    if (hit) swap(hit, true)
+    this.hovered = hit
+    document.body.style.cursor = hit ? 'pointer' : ''
+  }
+
+  /** the hidden terrain's life: it flows on its own and faster with the scroll; the cursor's
+   *  hill eases after the pointer and sinks away when it leaves */
+  private stepHiddenTerrain(dt: number): void {
+    if (PORTRAIT.uPortraitOn.value < 1.5) return
+    PORTRAIT.uHFlow.value += dt * (0.12 + Math.min(this.tunnelScroll, 4) * 0.35)
+    const m = PORTRAIT.uHMouse.value
+    const k = Math.min(1, dt * 4)
+    m.x += (this.target.x - m.x) * k
+    m.y += (this.target.y - m.y) * k
+    PORTRAIT.uHMouseAmt.value += ((this.pointerInside ? 1 : 0) - PORTRAIT.uHMouseAmt.value) * Math.min(1, dt * 3)
+  }
+
+  private stepTunnelItems(dt: number): void {
+    if (this.tunnelInst.length) return this.stepTunnelInstances(dt)
+    if (!this.tunnelItems.length) return
+    this.stepHiddenTerrain(dt)
+    this.stepTunnelHover()
+    const fog = this.doorScene.fog as THREE.Fog | null
+    if (fog && this.tunnelObjs) this.tunnelObjs.fog.value.set(fog.near, fog.far)
+    for (const o of this.tunnelItems) {
+      const m = o.userData.slot as THREE.Mesh
+      let op = (m.material as THREE.MeshBasicMaterial).opacity
+      if (this.drawnEvery > 1) {
+        // all there at once (as the real tunnel): the photos' one-by-one stagger undone
+        const at = m.userData.revealAt as number
+        const st = THREE.MathUtils.smoothstep(this.revealClock, at, at + 0.4)
+        op = this.revealClock < 0 ? 0 : st > 0.001 ? Math.min(1, op / st) : this.inWormhole ? op : 1
+      }
+      o.visible = op > 0.005
+      if (!o.visible) continue
+      o.position.copy(m.position)
+      if (this.tunnelRandom) o.position.set(o.userData.rx as number, o.userData.ryy as number, m.position.z)
+      o.traverse((c) => {
+        const mat = (c as THREE.Mesh).material as THREE.Material | undefined
+        if (mat) mat.opacity = op
+      })
+      o.userData.ry = ((o.userData.ry as number) ?? 0) + dt * (o.userData.spin as number)
+      o.quaternion.setFromAxisAngle(o.userData.axis as THREE.Vector3, o.userData.ry as number)
+    }
+  }
+
+  /** TEST (/hero-drawn-grab.html): over a crumb, the system's grab hand — closed while the button is
+   *  held (it stays closed through a drag that has slipped off the pile) */
+  private stepGrabCursor(shut: boolean): void {
+    let over = false
+    if (shut && this.pointerInside && this.crumbs.stage.visible) {
+      this.grabNdc.set(this.target.x * 2 - 1, this.target.y * 2 - 1)
+      this.grabRay.setFromCamera(this.grabNdc, this.doorCam)
+      const shown = (o: THREE.Object3D | null): boolean => !o || (o.visible && shown(o.parent))
+      over = this.grabRay.intersectObject(this.crumbs.stage, true).some((h) => shown(h.object))
+    }
+    const want = this.down > 0.5 && (over || this.grabShown === 'grabbing') ? 'grabbing' : over ? 'grab' : ''
+    if (want !== this.grabShown) {
+      document.body.style.cursor = want
+      this.grabShown = want
+    }
+  }
+
+  /** TEST (/hero-drawn.html): a crumb drawn — paper, graphite outline, hatching, and its photo's
+   *  dark spots (the cookie's chips, the cracker's holes) drawn as marks */
+  private drawnCrumbMaterial(map: THREE.Texture | null): THREE.Material {
+    return new THREE.ShaderMaterial({
+      uniforms: { ...this.drawnU, ...this.reveal.uniforms, uMap: { value: map }, uCrumbReveal: { value: this.crumbReveal ? 1 : 0 } },
+      vertexShader: `
+        varying vec3 vViewN;
+        varying vec4 vClip;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vViewN = normalize(normalMatrix * normal);
+          vClip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_Position = vClip;
+        }`,
+      fragmentShader: `
+        precision highp float;
+        uniform sampler2D uMap;
+        uniform float uCrumbReveal;
+        varying vec3 vViewN;
+        varying vec4 vClip;
+        varying vec2 vUv;
+        ${DRAWN_GLSL}
+        ${REVEAL_GLSL}
+        void main() {
+          vec2 suv = (vClip.xy / vClip.w) * 0.5 + 0.5;
+          // the photo's lightness as seen (the texture is decoded to linear on read)
+          vec2 tuv = drawnBoil(vUv, fwidth(vUv));
+          float l = pow(dot(texture2D(uMap, tuv).rgb, vec3(0.299, 0.587, 0.114)), 1.0 / 2.2);
+          float ink = max(drawnInk(suv, vViewN), drawnMarks(suv, l, 0.33, fwidth(l), 0.0));
+          vec3 col = mix(drawnPaper(suv), D_INK, ink);
+          if (uCrumbReveal > 0.5) {
+            // through the cursor's holes: the crumb as it really is — its photo, lit roughly as
+            // the plain hero lights it (a key from the upper left + fill), back to display values
+            vec3 n = normalize(vViewN);
+            float lit = 0.42 + 0.78 * max(dot(n, normalize(vec3(-0.35, 0.6, 0.72))), 0.0);
+            vec3 real = pow(texture2D(uMap, vUv).rgb * lit, vec3(1.0 / 2.2));
+            col = revealApplyWith(col, real, suv);
+          }
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    })
   }
 
   private async loadFonts(): Promise<void> {
@@ -953,7 +1776,8 @@ export class ShaderHero {
         ttf.loadAsync('/fonts/Tinos-Italic.ttf'),
       ])
       type FontData = ConstructorParameters<typeof Font>[0]
-      this.fonts = { bold: new Font(b as unknown as FontData), italic: new Font(i as unknown as FontData) }
+      const italic = new Font(i as unknown as FontData)
+      this.fonts = { bold: new Font(b as unknown as FontData), italic, tag: italic }
     } catch (e) {
       console.error('[hero] sign font load failed', e)
     }
@@ -1087,6 +1911,7 @@ export class ShaderHero {
         grp.remove(child)
       }
     }
+    this.signMeshes = []
   }
 
   /** (re)build the extruded letters for the current viewport and split them GEN | ERIC. */
@@ -1104,25 +1929,19 @@ export class ShaderHero {
     const w1 = probe.boundingBox!.max.x - probe.boundingBox!.min.x
     probe.dispose()
     const size = targetW / w1
-    const depth = size * LETTER_DEPTH
-    const bevel = size * 0.018
+    const shape = this.signShape(size)
+    const depth = shape.depth
+    const bevel = shape.bevelEnabled ? shape.bevelThickness : 0
 
-    const geo = new TextGeometry('GENERIC.', {
-      font: this.fonts.bold,
-      size,
-      depth,
-      curveSegments: 5,
-      bevelEnabled: true,
-      bevelThickness: bevel,
-      bevelSize: bevel,
-      bevelSegments: 2,
-    })
+    const geo = new TextGeometry('GENERIC.', { font: this.fonts.bold, size, ...shape })
     geo.computeBoundingBox()
     const bb = geo.boundingBox!
     const halfW = (bb.max.x - bb.min.x) / 2
     const halfH = (bb.max.y - bb.min.y) / 2
 
     // lockup centre -> origin; extrusion runs z 0..depth so the back sits on the panel
+    // (translate() recomputes bb, so keep the original centre for the LetterSwap layout)
+    const centre = new THREE.Vector2((bb.max.x + bb.min.x) / 2, (bb.max.y + bb.min.y) / 2)
     geo.translate(-(bb.max.x + bb.min.x) / 2, -(bb.max.y + bb.min.y) / 2, 0)
 
     const [gl, gr] = this.bisect(geo)
@@ -1130,43 +1949,76 @@ export class ShaderHero {
 
     const yOff = vh * 0.03
     const zOff = 0.015
+    if (this.letterSwap) this.layoutLetterSwap(size, centre, yOff, zOff + depth + bevel)
     const meshL = new THREE.Mesh(gl, this.letterMat)
     meshL.position.set(vw / 2, yOff, zOff)
     this.lettersL.add(meshL)
     const meshR = new THREE.Mesh(gr, this.letterMat)
     meshR.position.set(-vw / 2, yOff, zOff)
     this.lettersR.add(meshR)
+    this.signMeshes.push(meshL, meshR)
+    this.pinRest(meshL)
+    this.pinRest(meshR)
 
     // "We are" — italic, just above the G, entirely on the left leaf
     const weSize = size * 0.165
-    const weGeo = new TextGeometry('We are', {
-      font: this.fonts.italic,
-      size: weSize,
-      depth: weSize * 0.16,
-      curveSegments: 4,
-      bevelEnabled: true,
-      bevelThickness: weSize * 0.03,
-      bevelSize: weSize * 0.03,
-      bevelSegments: 1,
-    })
+    const weGeo = new TextGeometry('We are', { font: this.fonts.italic, size: weSize, ...this.weShape(weSize) })
     weGeo.computeBoundingBox()
     const wb = weGeo.boundingBox!
     weGeo.translate(-wb.min.x, -wb.min.y, 0)
-    const we = new THREE.Mesh(weGeo, this.letterMat)
-    we.position.set(vw / 2 - halfW + size * 0.03, yOff + halfH + size * 0.06, zOff)
-    this.lettersL.add(we)
+    const weX = vw / 2 - halfW + size * 0.03
+    // (dodging version sits a bit higher, clear of the G's top)
+    const weY = yOff + halfH + size * (this.weAreDodge ? 0.16 : 0.06)
+    this.weLetters = []
+    if (this.weAreDodge) {
+      // one mesh per letter, laid out by the font's own advances (TextGeometry doesn't kern, so
+      // this matches the one-piece version exactly); pivot at each letter's centre so it can tilt
+      const it = this.fonts.italic
+      const itData = it.data as unknown as { resolution: number; glyphs: Record<string, { ha: number }> }
+      const k = weSize / itData.resolution
+      this.weMat ??= new THREE.ShaderMaterial({
+        side: THREE.DoubleSide,
+        vertexShader: this.letterMat.vertexShader,
+        fragmentShader: this.letterMat.fragmentShader,
+        uniforms: { ...this.letterMat.uniforms, uNoReveal: { value: 1 } }, // shared objects, except this one
+      })
+      let adv = 0
+      for (const ch of 'We are') {
+        if (ch !== ' ') {
+          const g = new TextGeometry(ch, { font: it, size: weSize, ...this.weShape(weSize) })
+          g.computeBoundingBox()
+          const c = g.boundingBox!.getCenter(new THREE.Vector3())
+          g.translate(-c.x, -c.y, 0)
+          const m = new THREE.Mesh(g, this.weMat)
+          const home = new THREE.Vector3(weX + adv - wb.min.x + c.x, weY - wb.min.y + c.y, zOff)
+          m.position.copy(home)
+          this.lettersL.add(m)
+          this.signMeshes.push(m)
+          this.weLetters.push({ mesh: m, home, off: new THREE.Vector2(), vel: new THREE.Vector2(), rot: 0, rotV: 0 })
+        }
+        adv += itData.glyphs[ch].ha * k
+      }
+      weGeo.dispose()
+      this.weLift = depth + bevel
+      this.wePxToWorld = (2 * (DOOR_CAM_Z - zOff - weSize * 0.2) * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))) / this.H
+    } else {
+      const we = new THREE.Mesh(weGeo, this.letterMat)
+      we.position.set(weX, weY, zOff)
+      this.lettersL.add(we)
+      this.signMeshes.push(we)
+    }
 
     // tagline — on the cube's outer face, revealed once the cube has turned far enough
     const cs = this.cubeSide
     const cxL = cs / 2 - vw * 0.006 // left cube centre offset inside its hinge (matches buildLeaf)
     const tagW = cs * 0.7
     const makeTag = (text: string): THREE.Mesh => {
-      const pr = new TextGeometry(text, { font: this.fonts!.italic, size: 1, depth: 0.001, bevelEnabled: false })
+      const pr = new TextGeometry(text, { font: this.fonts!.tag, size: 1, depth: 0.001, bevelEnabled: false })
       pr.computeBoundingBox()
       const s = tagW / (pr.boundingBox!.max.x - pr.boundingBox!.min.x)
       pr.dispose()
       const g = new TextGeometry(text, {
-        font: this.fonts!.italic,
+        font: this.fonts!.tag,
         size: s,
         depth: s * 0.14,
         curveSegments: 4,
@@ -1184,12 +2036,12 @@ export class ShaderHero {
     const tagL = makeTag('We do things')
     const tagR = makeTag('for people.')
     // left cube: on its -x (outer) face, facing -x, just outside it.
-    tagL.material = this.tagMatL // self-contained, same key/gate as the face, darker albedo
+    tagL.material = this.drawn ? this.drawnTagMat : this.tagMatL // self-contained, same key/gate as the face, darker albedo
     tagL.rotation.y = -Math.PI / 2
     tagL.position.set(cxL - cs / 2 - 0.05, yOff, -cs / 2)
     tagL.layers.set(1)
     // right cube: mirror — on its +x (outer) face
-    tagR.material = this.tagMatR
+    tagR.material = this.drawn ? this.drawnTagMat : this.tagMatR
     tagR.rotation.y = Math.PI / 2
     tagR.position.set(-(cxL - cs / 2 - 0.05), yOff, -cs / 2)
     tagR.layers.set(2)
@@ -1204,14 +2056,7 @@ export class ShaderHero {
   }
 
   private clearTargets(): void {
-    const prev = this.renderer.getClearColor(new THREE.Color()).getHex()
-    this.renderer.setClearColor(0x000000, 1)
-    for (const rt of [this.rtA, this.rtB]) {
-      this.renderer.setRenderTarget(rt)
-      this.renderer.clear()
-    }
-    this.renderer.setRenderTarget(null)
-    this.renderer.setClearColor(prev, 1)
+    this.fluid.clear()
   }
 
   // ---- loop -------------------------------------------------------
@@ -1221,18 +2066,11 @@ export class ShaderHero {
     this.pointer.lerp(this.target, 0.35)
     this.active += ((this.hasFocus() ? 1 : 0) - this.active) * 0.12
 
-    // heat field pass
-    this.fieldMat.uniforms.uPrev.value = this.rtA.texture
-    this.fieldMat.uniforms.uPointer.value.copy(this.pointer)
-    this.fieldMat.uniforms.uPrevPointer.value.copy(this.prevPointer)
-    this.fieldMat.uniforms.uAspect.value = this.W / this.H
-    this.fieldMat.uniforms.uDown.value = this.down
-    this.fieldMat.uniforms.uActive.value = this.active
-    this.renderer.setRenderTarget(this.rtB)
-    this.renderer.render(this.fieldScene, this.camera)
-    const swap = this.rtA
-    this.rtA = this.rtB
-    this.rtB = swap
+    // the cursor's fluid sim advances every frame regardless of hover (it just decays
+    // to nothing when idle) — splat() (which actually pushes it) is called further
+    // down, once overSign is known.
+    this.fluid.setAspect(this.W / this.H)
+    this.fluid.step(dt)
 
     // ground -> heroRT, mapped onto the door leaves. Off-white at rest, morphs to
     // concrete over the first stretch of scroll.
@@ -1248,6 +2086,13 @@ export class ShaderHero {
     // doors — held shut while the crumbs are still evacuating. Scroll made during
     // that wait must NOT bank: pin the target just past the suction threshold so it
     // can't accumulate; the hero only starts building once the crumbs are gone.
+    // an objects tunnel: the doors don't open as far as the tunnel showing until every object is
+    // loaded and on the GPU — none of them may turn up late (in practice it's long ready by then)
+    if (this.tunnelObjs?.look === 'real' && !this.tunnelReady) {
+      const cap = TUNNEL_REVEAL_P - 0.08
+      this.manual = Math.min(this.manual, cap)
+      this.progressTarget = Math.min(this.progressTarget, cap)
+    }
     if (!this.crumbs.clear) {
       this.manual = Math.min(this.manual, 0.02)
       this.progressTarget = this.manual
@@ -1274,8 +2119,10 @@ export class ShaderHero {
     // shrink alone keeps the receding cubes framed.
     const xPull = 1
 
-    this.letterMat.uniforms.uField.value = this.rtA.texture
+    this.letterMat.uniforms.uDye.value = this.fluid.dyeTexture
+    this.letterMat.uniforms.uVelocity.value = this.fluid.velocityTexture
     this.letterMat.uniforms.uOpen.value = Math.min(1, P * 2.5)
+    this.letterMat.uniforms.uTime.value += dt
 
     // rotation rides the same curve as the recede (doorE) and decelerates into
     // SPIN_CAP at FREEZE_P instead of slamming into it
@@ -1299,6 +2146,7 @@ export class ShaderHero {
     this.letterMat.uniforms.uPhase.value = dark
     this.tagMatL.uniforms.uReveal.value = bright
     this.tagMatR.uniforms.uReveal.value = bright
+    this.drawnTagShade.value = 1 - bright
 
     this.leftHinge.position.set((-vw / 2) * xPull, 0, fwd)
     this.rightHinge.position.set((vw / 2) * xPull, 0, fwd)
@@ -1314,11 +2162,100 @@ export class ShaderHero {
     this._look.set(0, 0, camZ - 10) // always straight ahead
     this.doorCam.lookAt(this._look)
 
+    // is the cursor actually over the wordmark? A real raycast against the letter
+    // meshes, not the page-wide pointerInside flag — see the field comments above.
+    this.raycaster.setFromCamera(new THREE.Vector2(this.pointer.x * 2 - 1, this.pointer.y * 2 - 1), this.doorCam)
+    this.overSign = this.signMeshes.length > 0 && this.raycaster.intersectObjects(this.signMeshes, false).length > 0
+
+    // material roulette — the INSTANT the cursor lands on the sign, the whole
+    // wordmark hard-cuts to a random material from FOOD_MATERIALS (no spotlight, no
+    // delay, no "chrome" precursor). While it stays hovered, it keeps hard-cutting to
+    // a new unrelated material every couple of seconds. Leaving the sign drops it
+    // back to plain resting metal (uMatIndex 0) with no reactivity at all.
+    if (ROULETTE_ENABLED && this.overSign) {
+      this.matTimer += dt
+      if (this.matIndex === 0 || this.matTimer > this.matNextSwitch) {
+        this.matTimer = 0
+        this.matNextSwitch = MAT_SWITCH_MIN + Math.random() * (MAT_SWITCH_MAX - MAT_SWITCH_MIN)
+        let next = this.matIndex
+        while (next === this.matIndex && FOOD_MATERIALS.length > 1) {
+          next = FOOD_MATERIALS[Math.floor(Math.random() * FOOD_MATERIALS.length)]
+        }
+        this.matIndex = FOOD_MATERIALS.length === 1 ? FOOD_MATERIALS[0] : next
+      }
+    } else if (this.matIndex !== 0) {
+      this.matIndex = 0
+      this.matTimer = 0
+    }
+    this.letterMat.uniforms.uMatIndex.value = this.matIndex
+
+    // push the cursor's actual movement into the fluid sim — only while it's over
+    // the sign, so drifting across the rest of the page doesn't stir it for nothing
+    if (ROULETTE_ENABLED && this.overSign) {
+      const dx = this.pointer.x - this.prevPointer.x
+      const dy = this.pointer.y - this.prevPointer.y
+      const len = Math.hypot(dx, dy)
+      if (len > 1e-5) {
+        this._splatPoint.copy(this.pointer)
+        this._splatDir.set(dx / len, dy / len)
+        this.fluid.splat(this._splatPoint, this._splatDir, len * (0.55 + this.down * 0.45))
+      }
+    }
+
+    // the reveal holes: stirred by the raw cursor anywhere on the page (not just over
+    // the sign), weakening as the doors start to move and gone by REVEAL_FADE_P
+    this.reveal.uniforms.uRevealPx.value.set(1 / this.W, 1 / this.H)
+    if (this.letterSwap) {
+      // /hero-letters: the cursor stops the moment the doors start to open (back as soon as
+      // they're shut again); the holes it already made stay and close on their own, riding the
+      // cubes as they swing (see restOn)
+      const doorsShut = doorE <= DOORS_SHUT_E
+      this.reveal.step(dt, this.target, this.pointerInside && doorsShut, this.W / this.H, 0)
+    } else {
+      this.reveal.step(dt, this.target, this.pointerInside, this.W / this.H, THREE.MathUtils.clamp(P / REVEAL_FADE_P, 0, 1))
+    }
+
+    this.letterSwap?.step(dt)
+    if (this.weLetters.length) this.stepWeAre(dt, doorE <= DOORS_SHUT_E)
+
     this.stepGallery(dt, P, camZ)
 
+    // the cursor knocks the pile around (only where CrumbRain was built with push)
+    this.crumbs.setPointer(this.pointerInside && doorE <= DOORS_SHUT_E && (!this.crumbPushHold || this.down > 0.5) ? this.target : null)
+    if (this.crumbGrabCursor) this.stepGrabCursor(doorE <= DOORS_SHUT_E)
     this.crumbs.step(dt)
 
+    // rest pose for the pinned reveal: refreshed while the doors are shut, frozen once they move
+    this.restLive = doorE <= DOORS_SHUT_E
+    if (this.restLive) {
+      this.doorCam.updateMatrixWorld()
+      this.restVP.value.multiplyMatrices(this.doorCam.projectionMatrix, this.doorCam.matrixWorldInverse)
+    }
+    // past the cubes (the camera has punched through them into the tunnel) nothing of the hero is
+    // in view: skip what only it needed — the cubes' shadow maps (two scene renders a frame) and
+    // the drawn outline pass — and stop updating the hinges. The main thread was busy all frame
+    const pastDoors = this.progress >= TUNNEL_ARM_P
+    this.renderer.shadowMap.autoUpdate = !pastDoors
+    this.leftHinge.visible = this.rightHinge.visible = !pastDoors
+    if (this.drawn && !pastDoors) {
+      this.drawn.step(dt)
+      this.drawn.normalPass(this.doorScene, this.doorCam, [this.leftHinge, this.rightHinge, ...(this.drawnCrumbs ? [this.crumbs.stage] : []), ...this.weLetters.map((w) => w.mesh), ...(this.tunnelObjs?.look === 'drawn' ? this.tunnelItems : [])])
+    }
+    const wantRes = this.gallery.visible ? this.tunnelResScale : 1
+    if (wantRes !== this.resScaleNow) {
+      this.resScaleNow = wantRes
+      const box = this.canvas.getBoundingClientRect()
+      this.renderer.setPixelRatio(this.dpr * wantRes)
+      this.renderer.setSize(box.width, box.height, false)
+      this.renderer.setViewport(0, 0, this.W, this.H)
+    }
     this.renderer.render(this.doorScene, this.doorCam)
+    if (this.tunnelInst.length && this.gallery.visible) {
+      this.objScene.fog = this.doorScene.fog
+      this.renderer.autoClear = false
+      this.renderer.render(this.objScene, this.doorCam)
+      this.renderer.autoClear = true
+    }
 
     this.prevPointer.copy(this.pointer)
   }
@@ -1327,6 +2264,10 @@ export class ShaderHero {
    *  then Floema's warp burst -> idle drift + a scroll-RATE speed boost + fog + recycle.
    *  Sustained fast scrolling here charges the wormhole (see stepWormhole). */
   private stepGallery(dt: number, P: number, camZ: number): void {
+    if (this.inApproach) {
+      this.stepApproach(dt)
+      return
+    }
     if (this.inTunnel) {
       this.stepTunnel(dt)
       return
@@ -1375,7 +2316,7 @@ export class ShaderHero {
           console.info('[hero] wormhole: locked')
         }
       } else {
-        if (armed && this.tunnelScroll > WARP_SCROLL_THRESH) {
+        if (armed && this.textsDone && this.tunnelScroll > WARP_SCROLL_THRESH) {
           const power = 1 + (this.tunnelScroll - WARP_SCROLL_THRESH) * 0.35 // how hard, right now
           const frac = THREE.MathUtils.clamp((this.wormPulses - 1) / (WORM_GESTURE_NEEDED - 1), 0, 1)
           const commitment = THREE.MathUtils.lerp(WORM_GESTURE_FLOOR, 1, frac) // how many separate pushes
@@ -1448,6 +2389,9 @@ export class ShaderHero {
       m.scale.set(s0.x * (1 - cc * 0.5), s0.y * (1 + cc * 2.5), 1)
     }
     this.stepStreaks(dt, cc, camZ)
+    this.stepTunnelItems(dt)
+    this.stepFeatured(dt, camZ, armed)
+    this.stepTexts(camZ, armed)
 
     // the vortex, far down the corridor: hidden at rest, and as the charge builds
     // it grows and comes closer — "vê um pequeno buraco de minhoca que vai crescendo
@@ -1483,6 +2427,28 @@ export class ShaderHero {
     }
 
     this.setDoorFov(THREE.MathUtils.lerp(DOOR_FOV, DOOR_FOV + WARP_FOV_GAIN, cc))
+  }
+
+  /** the tunnel texts: parked one after another down the axis, brought toward the camera only
+   *  by scroll (textTravel); each fades in as it comes within reading range and out as it
+   *  reaches the camera. Once the last has gone by, textsDone — the wormhole can charge */
+  private stepTexts(camZ: number, armed: boolean): void {
+    const texts = this.galleryTexts
+    if (!texts.length) return
+    const reveal = THREE.MathUtils.smoothstep(this.revealClock, 0.3, 1.0)
+    texts.forEach((m, i) => {
+      const ahead = TEXT_FIRST + i * TEXT_GAP - this.textTravel // distance in front of the camera
+      m.position.set((m.userData.side as number) * 1.4, i % 3 === 1 ? 0.6 : -0.4, camZ - ahead)
+      const fadeIn = 1 - THREE.MathUtils.smoothstep(ahead, TEXT_GAP * 1.4, TEXT_GAP * 2.2)
+      const fadeOut = THREE.MathUtils.smoothstep(ahead, 1.2, 4)
+      const o = armed && !this.textsDone ? reveal * fadeIn * fadeOut : 0
+      ;(m.material as THREE.MeshBasicMaterial).opacity = o
+      m.visible = o > 0.002
+    })
+    if (!this.textsDone && TEXT_FIRST + (texts.length - 1) * TEXT_GAP - this.textTravel < 1.2) {
+      this.textsDone = true // that was the last one
+      console.info('[hero] tunnel texts: done — the wormhole can charge')
+    }
   }
 
   /** the hyperspace streak field: hundreds of small dashes at their own radii,
@@ -1569,7 +2535,25 @@ export class ShaderHero {
       m.rotation.z = a - Math.PI / 2
       ;(m.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - suck * 1.3)
     }
+    this.stepTunnelItems(dt)
     this.stepStreaks(dt, 1, camZ)
+
+    // /hero-worm: warm the destination page's files as soon as the fall starts, so the jump
+    // at the white peak doesn't land on a loading screen
+    if (this.wormTo && !this.wormPrefetched) {
+      this.wormPrefetched = true
+      for (const href of [this.wormTo, ...this.wormPrefetch]) {
+        const l = document.createElement('link')
+        l.rel = 'prefetch'
+        l.href = href
+        document.head.appendChild(l)
+      }
+    }
+    // ...and at the white peak, through to it
+    if (this.wormTo && !this.wormLeaving && t >= WORMHOLE_DURATION - 0.1) {
+      this.wormLeaving = true
+      window.location.href = this.wormTo
+    }
 
     // hard white at the peak of the bloom, then fall away into the chapter tunnel
     flash.visible = true
@@ -1577,7 +2561,8 @@ export class ShaderHero {
     flash.position.set(this.doorCam.position.x, this.doorCam.position.y, this.doorCam.position.z - 0.5)
     const up = THREE.MathUtils.smoothstep(t, WORMHOLE_DURATION - 0.7, WORMHOLE_DURATION - 0.15)
     const down = THREE.MathUtils.smoothstep(t, WORMHOLE_DURATION - 0.05, WORMHOLE_DURATION + 0.9)
-    ;(flash.material as THREE.MeshBasicMaterial).opacity = Math.max(0, up - down)
+    // (leaving for another page: hold the white while it loads — that page starts on white)
+    ;(flash.material as THREE.MeshBasicMaterial).opacity = this.wormLeaving ? 1 : Math.max(0, up - down)
 
     if (t >= WORMHOLE_DURATION + 0.9) {
       flash.visible = false
@@ -1628,6 +2613,23 @@ export class ShaderHero {
     this.locked = false
   }
 
+  /** DEV ONLY — skips straight to the approach (past the wormhole and the chapter
+   *  tunnel), so it's not a full replay every time just to look at the ending.
+   *  Wired to a URL param in main.ts; remove both when this stops being useful. */
+  jumpToApproach(): void {
+    this.locked = false
+    this.manual = 1
+    this.progressTarget = 1
+    this.progress = 1
+    this.inWormhole = false
+    this.inTunnel = false
+    this.inApproach = true
+    this.approachTime = 0
+    this.gallery.visible = false
+    if (this.wormTube) this.wormTube.visible = false
+    if (this.beyondTube) this.beyondTube.visible = false
+  }
+
   /** counts a scroll "push" toward the wormhole charge — a gap of WORM_GESTURE_GAP
    *  since the last qualifying input means this is a NEW push, not a continuation
    *  of the same scroll. One long scroll only ever counts as a single push, however
@@ -1647,11 +2649,21 @@ export class ShaderHero {
       // hero scroll is spent — every flick (either direction) feeds the tunnel speed
       // AND charges the wormhole; decays fast, so the RATE of flicking sets both.
       this.tunnelScroll = Math.min(6, this.tunnelScroll + Math.abs(e.deltaY) * 0.0016)
-      if (Math.abs(e.deltaY) > 4) this.notePulse()
+      // the texts move only with scroll (both ways); while any is left, no wormhole pushes count
+      if (!this.textsDone) this.advanceTexts(e.deltaY)
+      else if (Math.abs(e.deltaY) > 4) this.notePulse()
       return
     }
     this.manual = THREE.MathUtils.clamp(this.manual + e.deltaY / 2600, 0, 1)
     this.progressTarget = this.manual
+  }
+
+  /** scroll moves the texts — only once the tunnel is in view (the scroll that opened the doors
+   *  doesn't carry over), and each notch by at most TEXT_STEP_MAX so a hard flick can't skip one */
+  private advanceTexts(deltaPx: number): void {
+    if (this.progress < TUNNEL_ARM_P || this.revealClock < 0.8) return
+    const d = THREE.MathUtils.clamp(deltaPx * TEXT_PER_PX, -TEXT_STEP_MAX, TEXT_STEP_MAX)
+    this.textTravel = Math.max(0, this.textTravel + d)
   }
 
   private onScroll = (): void => {
@@ -1667,11 +2679,122 @@ export class ShaderHero {
     if (s === undefined) return
     if (this.manual >= 1) {
       this.tunnelScroll = Math.min(6, this.tunnelScroll + Math.abs(s) * 3)
-      this.notePulse()
+      if (!this.textsDone) this.advanceTexts(s * 900)
+      else this.notePulse()
       return
     }
     this.manual = THREE.MathUtils.clamp(this.manual + s, 0, 1)
     this.progressTarget = this.manual
+  }
+
+  /** extrusion of "GENERIC." per sign style */
+  private signShape(size: number) {
+    switch (this.sign) {
+      case 'matte':
+        // straight cut, no chamfer: a flat-faced block
+        return { depth: size * LETTER_DEPTH, curveSegments: 6, bevelEnabled: false, bevelThickness: 0, bevelSize: 0, bevelSegments: 0 }
+      default:
+        return { depth: size * LETTER_DEPTH, curveSegments: 5, bevelEnabled: true, bevelThickness: size * 0.018, bevelSize: size * 0.018, bevelSegments: 2 }
+    }
+  }
+
+  private weShape(weSize: number) {
+    switch (this.sign) {
+      case 'matte':
+        return { depth: weSize * 0.16, curveSegments: 4, bevelEnabled: false, bevelThickness: 0, bevelSize: 0, bevelSegments: 0 }
+      default:
+        return { depth: weSize * 0.16, curveSegments: 4, bevelEnabled: true, bevelThickness: weSize * 0.03, bevelSize: weSize * 0.03, bevelSegments: 1 }
+    }
+  }
+
+  /** hand `mesh`'s rest (doors-shut) world matrix to whichever reveal material draws it */
+  private pinRest(mesh: THREE.Mesh): void {
+    mesh.onBeforeRender = (_r, _s, _c, _g, material) => {
+      const u = (material as THREE.ShaderMaterial).uniforms?.uRestModel as THREE.IUniform<THREE.Matrix4> | undefined
+      if (!u) return
+      const ud = mesh.userData as { rest?: THREE.Matrix4 }
+      if (this.restLive || !ud.rest) ud.rest = (ud.rest ?? new THREE.Matrix4()).copy(mesh.matrixWorld)
+      u.value.copy(ud.rest)
+      ;(material as THREE.ShaderMaterial).uniformsNeedUpdate = true
+    }
+  }
+
+  /** "We are" dodges the cursor: each letter is pushed away from it (harder the closer it
+   *  gets), on an underdamped spring — a little hop aside, and back with a wobble */
+  private stepWeAre(dt: number, doorsShut: boolean): void {
+    const R = 110 // px: reach of the cursor
+    const PUSH = 75 // px: how far a letter jumps at point-blank
+    const K = 260 // spring stiffness
+    const C = 13 // damping (< 2*sqrt(K) ~ 32: some overshoot)
+    const mx = this.target.x * this.W
+    const my = (1 - this.target.y) * this.H
+    const on = this.pointerInside && doorsShut
+    const h = Math.min(dt, 1 / 30)
+    for (const L of this.weLetters) {
+      // the letter's screen position at home (the push is computed from where it belongs, so
+      // it doesn't run away from its own displacement)
+      const v = this._weV.copy(L.home)
+      L.mesh.parent!.localToWorld(v).project(this.doorCam)
+      const lx = (v.x * 0.5 + 0.5) * this.W
+      const ly = (1 - (v.y * 0.5 + 0.5)) * this.H
+      let tx = 0
+      let ty = 0
+      const dx = lx - mx
+      const dy = ly - my
+      const d = Math.hypot(dx, dy)
+      if (on && d < R) {
+        const f = Math.pow(1 - d / R, 1.5) * PUSH
+        const ux = d > 0.5 ? dx / d : 0
+        const uy = d > 0.5 ? dy / d : -1
+        // sideways and up only: pushed down, a letter would dive into the G below it
+        tx = ux * f
+        ty = -Math.abs(uy) * f * 0.6
+      }
+      // spring (px, screen y down)
+      L.vel.x += (K * (tx - L.off.x) - C * L.vel.x) * h
+      L.vel.y += (K * (ty - L.off.y) - C * L.vel.y) * h
+      L.off.x += L.vel.x * h
+      L.off.y += L.vel.y * h
+      // a tilt that follows the sideways motion
+      const tr = THREE.MathUtils.clamp(-L.vel.x * 0.0012, -0.45, 0.45)
+      L.rotV += (K * (tr - L.rot) - C * L.rotV) * h
+      L.rot += L.rotV * h
+      // while it's away from home it also comes forward, clear of GENERIC's thicker letters
+      const lift = Math.min(Math.hypot(L.off.x, L.off.y) / 30, 1) * this.weLift
+      L.mesh.position.set(L.home.x + L.off.x * this.wePxToWorld, L.home.y - L.off.y * this.wePxToWorld, L.home.z + lift)
+      L.mesh.rotation.z = L.rot
+    }
+  }
+
+  /** where each glyph of "GENERIC." lands on screen (doors closed): x from the font's own
+   *  advances, cap top / baseline from the E, projected through the door camera */
+  private layoutLetterSwap(size: number, centre: THREE.Vector2, yOff: number, zFront: number): void {
+    const font = this.fonts!.bold
+    const data = font.data as unknown as { resolution: number; glyphs: Record<string, { ha: number; x_min: number; x_max: number }> }
+    const k = size / data.resolution
+    const e = new TextGeometry('E', { font, size, depth: 0.001, bevelEnabled: false })
+    e.computeBoundingBox()
+    const capTop = e.boundingBox!.max.y
+    e.dispose()
+    const cx = centre.x
+    const cy = centre.y
+    const dist = DOOR_CAM_Z - zFront
+    const tan = Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))
+    const toX = (x: number) => (x / (dist * tan * (this.W / this.H)) * 0.5 + 0.5) * this.W
+    const toY = (y: number) => (1 - (y / (dist * tan) * 0.5 + 0.5)) * this.H
+    const slots: Slot[] = []
+    let off = 0
+    for (const ch of 'GENERIC.') {
+      const g = data.glyphs[ch]
+      slots.push({
+        cx: toX(off + ((g.x_min + g.x_max) / 2) * k - cx),
+        top: toY(capTop - cy + yOff),
+        bottom: toY(0 - cy + yOff),
+      })
+      off += g.ha * k
+    }
+    this.letterSwap!.layout(this.W, this.H, slots)
+    this.reveal.setSource(this.letterSwap!.texture, this.W / this.H)
   }
 
   private onResize = (): void => {
@@ -1686,9 +2809,8 @@ export class ShaderHero {
     this.renderer.setSize(box.width, box.height, false)
     this.renderer.setViewport(0, 0, this.W, this.H)
     const [bw, bh] = this.bufSize()
-    this.rtA.setSize(Math.max(2, Math.round(bw / 2)), Math.max(2, Math.round(bh / 2)))
-    this.rtB.setSize(Math.max(2, Math.round(bw / 2)), Math.max(2, Math.round(bh / 2)))
     this.heroRT.setSize(bw, bh)
+    this.drawn?.resize(this.W, this.H, this.dpr)
     this.clearTargets()
     this.heroMat.uniforms.uResolution.value.set(bw, bh)
     this.heroMat.uniforms.uViewAspect.value = bw / bh

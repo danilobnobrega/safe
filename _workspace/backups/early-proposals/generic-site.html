@@ -1,0 +1,989 @@
+<title>GENERIC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<style>
+  :root {
+    --paper: #f2f1ec;
+    --ink: #14150f;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "Public Sans", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    --serif: Times, "Times New Roman", Georgia, serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body:not(.touch) * { cursor: none !important; }
+
+  #stage { position: fixed; inset: 0; z-index: 0; display: block; }
+
+  #overlay {
+    position: fixed; inset: 0; z-index: 10;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  #overlay a, #overlay button, #overlay .hit { pointer-events: auto; }
+
+  /* ---------- persistent chrome ---------- */
+  .wordmark {
+    position: fixed; top: 18px; left: 20px; z-index: 20;
+    font-family: var(--serif); font-weight: 400;
+    font-size: 26px; line-height: 1; letter-spacing: .01em;
+    color: var(--ink); text-decoration: none;
+  }
+
+  .netnav {
+    position: fixed; bottom: 14px; left: 20px; z-index: 22;
+    font-family: var(--mono); font-size: 12px;
+    background: #fff; color: #000;
+    border: 1px solid #000; border-radius: 0;
+    padding: 3px 4px;
+    -webkit-appearance: menulist; appearance: menulist;
+  }
+
+  .cookie {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 24;
+    background: var(--ink); color: var(--paper);
+    font-family: var(--mono); font-size: 12px; line-height: 1.45;
+    padding: 9px 16px 9px 210px;
+    display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap;
+  }
+  .cookie p { margin: 0; max-width: 52ch; }
+  .cookie .btns { margin-left: auto; display: flex; gap: 8px; }
+  .cookie button {
+    font-family: var(--mono); font-size: 11px;
+    background: transparent; color: var(--paper);
+    border: 1px solid var(--paper); padding: 4px 8px;
+  }
+  .cookie button:hover { background: var(--paper); color: var(--ink); }
+
+  .domain {
+    position: fixed; right: 16px; bottom: 46px; z-index: 20;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--ink); opacity: .55;
+  }
+
+  /* ---------- cursor ---------- */
+  #cursor {
+    position: fixed; top: 0; left: 0; z-index: 50;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+    will-change: transform;
+  }
+  #cursor .ring {
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 1.5px solid var(--ink);
+    transition: width .25s, height .25s, border-color .25s, background-color .25s, opacity .2s;
+  }
+  #cursor.down .ring { width: 22px; height: 22px; background: currentColor; opacity: .18; }
+  #cursor .dot {
+    position: absolute; top: 50%; left: 50%;
+    width: 3px; height: 3px; border-radius: 50%;
+    background: var(--ink); transform: translate(-50%,-50%);
+  }
+  #cursor .clabel {
+    position: absolute; top: calc(50% + 24px); left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+    text-transform: uppercase; white-space: nowrap;
+    color: var(--ink); opacity: .6;
+  }
+  body.touch #cursor { display: none; }
+
+  /* ---------- loader ---------- */
+  #loader {
+    position: fixed; inset: 0; z-index: 40;
+    background: var(--paper);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px;
+    opacity: 0; visibility: hidden;
+    transition: opacity .25s;
+  }
+  #loader.on { opacity: 1; visibility: visible; }
+  #loader .spin {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 2px solid rgba(20,21,15,.2); border-top-color: var(--ink);
+    animation: spin .8s linear infinite;
+  }
+  #loader p {
+    margin: 0; font-family: var(--mono); font-size: 12px;
+    letter-spacing: .04em; color: var(--ink);
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- overlay content primitives ---------- */
+  .room-title {
+    position: absolute; top: 58px; left: 20px;
+    font-family: var(--serif); font-size: 22px; font-weight: 400;
+  }
+  .room-tag {
+    position: absolute; top: 88px; left: 20px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; opacity: .55;
+  }
+
+  .panel {
+    position: absolute; left: 20px; bottom: 92px; max-width: 340px;
+  }
+  .panel .copy {
+    font-family: var(--mono); font-size: 12px; line-height: 1.7;
+    background: rgba(255,255,255,.55); padding: 10px 12px;
+    border-left: 3px solid var(--ink);
+  }
+  .panel .copy.dark {
+    background: rgba(0,0,0,.35); color: var(--paper); border-color: var(--paper);
+  }
+
+  .btnrow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .gbtn {
+    font-family: var(--mono); font-size: 12px;
+    background: #fff; color: #000; border: 1px solid #000;
+    padding: 7px 12px;
+  }
+  .gbtn:hover { background: #000; color: #fff; }
+  .gbtn[aria-pressed="true"] { background: #000; color: #fff; }
+
+  .stub-note {
+    position: absolute; left: 20px; bottom: 60px;
+    font-family: var(--mono); font-size: 11px; opacity: .5; max-width: 320px;
+  }
+
+  /* ---------- hero ---------- */
+  .hero-head {
+    position: absolute; left: 50%; top: 30%; transform: translate(-50%,-50%);
+    text-align: center; width: 90%;
+  }
+  .hero-head h1 {
+    font-family: var(--serif); font-weight: 400;
+    font-size: clamp(44px, 9vw, 104px); line-height: .95; margin: 0;
+    letter-spacing: .005em;
+  }
+  .hero-head p {
+    font-family: var(--mono); font-size: 13px; letter-spacing: .06em;
+    margin: 14px 0 0; opacity: .7;
+  }
+  .door {
+    position: absolute; transform: translate(-50%,-50%);
+    font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
+    text-transform: lowercase; text-decoration: none;
+    color: var(--ink); opacity: .5;
+    padding: 6px 8px; white-space: nowrap;
+    transition: opacity .2s, color .2s, letter-spacing .2s;
+  }
+  .door::before { content: "· "; opacity: .5; }
+  .door:hover { opacity: 1; letter-spacing: .12em; }
+
+  /* ---------- checkout ---------- */
+  .card {
+    position: absolute; left: 50%; top: 46%; transform: translate(-50%,-50%);
+    width: min(360px, 82vw);
+    background: #fff; color: #111;
+    border: 1px solid #d7d7d2;
+    box-shadow: 0 30px 80px -30px rgba(0,0,0,.5);
+    padding: 22px;
+    font-family: var(--sans);
+  }
+  .card h3 { margin: 0 0 2px; font-size: 15px; }
+  .card .muted { color: #777; font-size: 12px; font-family: var(--mono); }
+  .card .line { display: flex; justify-content: space-between; margin: 14px 0; font-size: 13px; }
+  .card .fakefield {
+    border: 1px solid #ddd; padding: 9px 11px; font-family: var(--mono);
+    font-size: 13px; color: #999; letter-spacing: .12em; margin-bottom: 14px;
+  }
+  .card .cbtns { display: flex; flex-direction: column; gap: 8px; }
+  .card .cbtns button {
+    font-family: var(--mono); font-size: 13px; padding: 10px; border: 1px solid #000;
+    background: #fff; color: #000;
+  }
+  .card .cbtns button.primary { background: #000; color: #fff; }
+  .card .cbtns button:hover { opacity: .82; }
+
+  .success {
+    position: absolute; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px; background: var(--paper);
+  }
+  .success h2 { font-family: var(--serif); font-weight: 400; font-size: clamp(40px,10vw,88px); margin: 0 0 18px; }
+  .success p { font-family: var(--mono); font-size: 13px; margin: 4px 0; min-height: 18px; }
+  .success .gbtn { margin-top: 20px; text-decoration: none; }
+
+  .receipt {
+    position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 260px; background: #fff; color: #111;
+    box-shadow: 0 20px 60px -20px rgba(0,0,0,.4);
+    padding: 16px 16px 40px; font-family: var(--mono); font-size: 10px; line-height: 1.9;
+    display: none;
+  }
+  .receipt .r-row { display: flex; justify-content: space-between; gap: 8px; }
+  .receipt .r-row span:last-child { font-variant-numeric: tabular-nums; }
+
+  .reconsider {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center; background: #000;
+  }
+  .reconsider button {
+    font-family: var(--mono); font-size: 13px; letter-spacing: .06em;
+    background: transparent; color: #fff; border: 1px solid #fff; padding: 14px 20px;
+  }
+
+  @media (max-width: 600px) {
+    .cookie { padding-left: 16px; }
+    .netnav { bottom: 92px; }
+    .domain { bottom: 120px; }
+    .panel { max-width: 62vw; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #loader .spin { animation: none; opacity: .4; }
+    * { animation-duration: .001ms !important; }
+  }
+</style>
+
+<canvas id="stage"></canvas>
+<div id="overlay"></div>
+
+<a class="wordmark" href="#/">GENERIC</a>
+<select class="netnav" id="netnav" aria-label="go somewhere">
+  <option value="#/">— go somewhere —</option>
+  <option value="#/services">services</option>
+  <option value="#/faq">faq</option>
+  <option value="#/case-studies">case studies</option>
+  <option value="#/social-proof">social proof</option>
+  <option value="#/pitch-deck">pitch deck</option>
+  <option value="#/process">the process</option>
+  <option value="#/team">team</option>
+  <option value="#/terms">terms &amp; scope</option>
+  <option value="#/checkout">checkout</option>
+</select>
+<span class="domain">generic.bargains</span>
+
+<div class="cookie" id="cookie" data-no-swap>
+  <p id="cookie-note">We use cookies. Not to track your soul across the internet, but because the web browser freaks out if we don't put this banner here.</p>
+  <span class="btns">
+    <button type="button" id="ck-accept">[ ACCEPT COOKIES ]</button>
+    <button type="button" id="ck-biscuit">[ I PREFER BISCUITS ]</button>
+  </span>
+</div>
+
+<div id="loader"><div class="spin"></div><p id="loader-line">loading things</p></div>
+
+<div id="cursor"><div class="ring"></div><div class="dot"></div><div class="clabel" id="clabel"></div></div>
+
+<script>
+(function () {
+  "use strict";
+  var T = window.THREE;
+  var isTouch = window.matchMedia("(pointer: coarse)").matches;
+  if (isTouch) document.body.classList.add("touch");
+
+  // ---------------------------------------------------------------- app core
+  var canvas = document.getElementById("stage");
+  var overlay = document.getElementById("overlay");
+  var renderer = new T.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputEncoding = T.sRGBEncoding;
+  renderer.toneMapping = T.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+
+  var clock = new T.Clock();
+  var W = window.innerWidth, H = window.innerHeight;
+  renderer.setSize(W, H);
+
+  var pointer = { x: W / 2, y: H / 2, nx: 0, ny: 0, down: false, dx: 0, dy: 0 };
+  window.addEventListener("pointermove", function (e) {
+    pointer.dx = e.clientX - pointer.x;
+    pointer.dy = e.clientY - pointer.y;
+    pointer.x = e.clientX; pointer.y = e.clientY;
+    pointer.nx = (e.clientX / window.innerWidth) * 2 - 1;
+    pointer.ny = -((e.clientY / window.innerHeight) * 2 - 1);
+  });
+  window.addEventListener("pointerdown", function () { pointer.down = true; cursorEl.classList.add("down"); });
+  window.addEventListener("pointerup", function () { pointer.down = false; cursorEl.classList.remove("down"); });
+
+  // ---------------------------------------------------------------- cursor
+  var cursorEl = document.getElementById("cursor");
+  var ringEl = cursorEl.querySelector(".ring");
+  var clabel = document.getElementById("clabel");
+  var cx = W / 2, cy = H / 2;
+  function setCursor(color, label) {
+    ringEl.style.borderColor = color || "var(--ink)";
+    cursorEl.style.color = color || "#14150f";
+    clabel.textContent = label || "";
+    clabel.style.color = color || "#14150f";
+  }
+  function cursorTick() {
+    cx += (pointer.x - cx) * 0.2;
+    cy += (pointer.y - cy) * 0.2;
+    cursorEl.style.transform = "translate(" + cx + "px," + cy + "px) translate(-50%,-50%)";
+  }
+
+  // ---------------------------------------------------------------- helpers
+  function disposeScene(scene) {
+    scene.traverse(function (o) {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        var m = Array.isArray(o.material) ? o.material : [o.material];
+        m.forEach(function (mm) {
+          for (var k in mm) { if (mm[k] && mm[k].isTexture) mm[k].dispose(); }
+          mm.dispose();
+        });
+      }
+    });
+  }
+  function labelTexture(text, opts) {
+    opts = opts || {};
+    var c = document.createElement("canvas");
+    c.width = 512; c.height = 256;
+    var g = c.getContext("2d");
+    g.fillStyle = opts.bg || "#ffffff";
+    g.fillRect(0, 0, 512, 256);
+    g.fillStyle = opts.fg || "#111111";
+    g.font = (opts.size || 46) + "px Arial, sans-serif";
+    g.textAlign = "center"; g.textBaseline = "middle";
+    var lines = text.split("\n");
+    lines.forEach(function (ln, i) {
+      g.fillText(ln, 256, 128 + (i - (lines.length - 1) / 2) * (opts.size || 46) * 1.2);
+    });
+    var tex = new T.CanvasTexture(c);
+    tex.anisotropy = 4;
+    return tex;
+  }
+  function gradientEnv() {
+    var c = document.createElement("canvas");
+    c.width = 16; c.height = 256;
+    var g = c.getContext("2d");
+    var grd = g.createLinearGradient(0, 0, 0, 256);
+    grd.addColorStop(0, "#ffffff");
+    grd.addColorStop(0.45, "#c9ccce");
+    grd.addColorStop(0.5, "#eef0f1");
+    grd.addColorStop(0.55, "#a7abad");
+    grd.addColorStop(1, "#dfe1e2");
+    g.fillStyle = grd; g.fillRect(0, 0, 16, 256);
+    var tex = new T.CanvasTexture(c);
+    tex.mapping = T.EquirectangularReflectionMapping;
+    tex.encoding = T.sRGBEncoding;
+    return tex;
+  }
+  function raf(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function rint(a, b) { return Math.floor(a + Math.random() * (b - a)); }
+
+  // ================================================================ ROOMS
+  var Rooms = {};
+
+  // ---- HERO -----------------------------------------------------------
+  Rooms["/"] = function () {
+    var scene = new T.Scene();
+    var camera = new T.PerspectiveCamera(45, W / H, 0.1, 100);
+    camera.position.set(0, 0, 6);
+
+    var geo = new T.PlaneGeometry(16, 10, 80, 50);
+    var mat = new T.ShaderMaterial({
+      uniforms: { uMouse: { value: new T.Vector2(0, 0) }, uTime: { value: 0 } },
+      vertexShader: [
+        "uniform vec2 uMouse; uniform float uTime; varying vec2 vUv; varying float vD;",
+        "void main(){ vUv = uv; vec3 p = position;",
+        " vec2 m = uMouse * vec2(8.0, 5.0);",
+        " float d = distance(p.xy, m);",
+        " float dent = exp(-d*d*0.5) * 0.9;",
+        " p.z -= dent;",
+        " p.z += sin(p.x*1.5 + uTime*0.4)*0.03 + cos(p.y*1.7 - uTime*0.3)*0.03;",
+        " vD = dent;",
+        " gl_Position = projectionMatrix * modelViewMatrix * vec4(p,1.0); }"
+      ].join("\n"),
+      fragmentShader: [
+        "varying vec2 vUv; varying float vD;",
+        "float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3,289.1)))*43758.5); }",
+        "void main(){",
+        " vec3 paper = vec3(0.949, 0.945, 0.925);",
+        " float grain = (hash(vUv*900.0) - 0.5) * 0.03;",
+        " float vig = smoothstep(1.1, 0.2, distance(vUv, vec2(0.5)));",
+        " vec3 col = paper + grain - vD*0.20 - (1.0-vig)*0.03;",
+        " gl_FragColor = vec4(col, 1.0); }"
+      ].join("\n")
+    });
+    var plane = new T.Mesh(geo, mat);
+    scene.add(plane);
+
+    var doors = [
+      ["#/services", "a 3D logo, spinning", "18%", "62%"],
+      ["#/faq", "a question, folded", "78%", "30%"],
+      ["#/case-studies", "a small light", "62%", "78%"],
+      ["#/social-proof", "a logo, face down", "30%", "34%"],
+      ["#/pitch-deck", "a rectangle of projected light", "82%", "58%"],
+      ["#/process", "a gear, turning", "12%", "40%"],
+      ["#/team", "a head. it is looking at you.", "50%", "72%"],
+      ["#/terms", "text, too small to read", "72%", "84%"],
+      ["#/checkout", "[ pay money ] [ do not pay money ]", "40%", "88%"]
+    ];
+    var accents = ROOM_ACCENT;
+    overlay.innerHTML =
+      '<div class="hero-head"><h1>GENERIC.</h1><p>We do things for people.</p></div>';
+    doors.forEach(function (d) {
+      var a = document.createElement("a");
+      a.className = "door"; a.href = d[0]; a.textContent = d[1];
+      a.style.left = d[2]; a.style.top = d[3];
+      var route = d[0].slice(1);
+      a.addEventListener("mouseenter", function () { a.style.color = accents[route] || "#14150f"; });
+      a.addEventListener("mouseleave", function () { a.style.color = ""; });
+      overlay.appendChild(a);
+    });
+
+    return {
+      scene: scene, camera: camera,
+      enter: function () { setCursor("#14150f", "pick one"); },
+      update: function (dt, t) {
+        mat.uniforms.uTime.value = t;
+        mat.uniforms.uMouse.value.lerp(new T.Vector2(pointer.nx, pointer.ny), 0.08);
+      },
+      exit: function () { disposeScene(scene); }
+    };
+  };
+
+  // ---- SERVICES : The Spinning Logo ---------------------------------
+  Rooms["/services"] = function () {
+    var scene = new T.Scene();
+    scene.background = new T.Color("#f4f4f2");
+    var camera = new T.PerspectiveCamera(42, W / H, 0.1, 200);
+    camera.position.set(0, 0.6, 7);
+
+    scene.add(new T.HemisphereLight("#ffffff", "#c8c8c4", 0.9));
+    var key = new T.DirectionalLight("#ffffff", 1.1);
+    key.position.set(4, 6, 5); scene.add(key);
+
+    var shell = new T.Mesh(
+      new T.BoxGeometry(40, 26, 40),
+      new T.MeshStandardMaterial({ color: "#f6f6f4", side: T.BackSide, roughness: 1 })
+    );
+    scene.add(shell);
+
+    var pedestal = new T.Group();
+    var top = new T.Mesh(new T.CylinderGeometry(1.5, 1.7, 0.35, 48),
+      new T.MeshStandardMaterial({ color: "#e3e3df", roughness: .7 }));
+    var col = new T.Mesh(new T.CylinderGeometry(0.9, 1.1, 3, 48),
+      new T.MeshStandardMaterial({ color: "#dcdcd8", roughness: .8 }));
+    top.position.y = -1.4; col.position.y = -3.1;
+    pedestal.add(top, col); pedestal.position.y = 0; scene.add(pedestal);
+
+    var env = gradientEnv();
+    function uglyShape(kind) {
+      var s = new T.Shape();
+      var spikes = kind === 0 ? 5 : kind === 1 ? 7 : kind === 2 ? 4 : 9;
+      var outer = 1.1, inner = kind === 3 ? 0.9 : 0.42;
+      for (var i = 0; i <= spikes * 2; i++) {
+        var r = i % 2 ? inner : outer;
+        var a = (i / (spikes * 2)) * Math.PI * 2;
+        var x = Math.cos(a) * r, y = Math.sin(a) * r;
+        i === 0 ? s.moveTo(x, y) : s.lineTo(x, y);
+      }
+      return new T.ExtrudeGeometry(s, { depth: 0.5, bevelEnabled: true, bevelSize: 0.09, bevelThickness: 0.09, bevelSegments: 3 });
+    }
+    var emblem = new T.Mesh(uglyShape(0), new T.MeshStandardMaterial({
+      color: "#eef0f2", metalness: 1, roughness: 0.14, envMap: env, envMapIntensity: 1.3
+    }));
+    emblem.position.y = 0.2; scene.add(emblem);
+
+    var spin = 0.6, vy = 0, thrown = false, py = 0.2, tipped = false;
+    var dragging = false, lastX = 0;
+
+    function onDown(e) { if (thrown) return; dragging = true; lastX = e.clientX; }
+    function onMove(e) { if (!dragging) return; var d = e.clientX - lastX; spin += d * 0.0006; lastX = e.clientX; }
+    function onUp(e) {
+      if (!dragging) return; dragging = false;
+      if (Math.abs(pointer.dx) > 26 && !thrown) {
+        thrown = true; vy = 0.16; spin += pointer.dx * 0.002;
+        showNo();
+      }
+    }
+    canvas.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+
+    function showNo() {
+      var n = overlay.querySelector("#pleasedont");
+      if (n) { n.style.opacity = "1"; }
+    }
+
+    var services = ["software", "coding", "maintenance", "consulting"];
+    overlay.innerHTML =
+      '<div class="room-title">Services</div><div class="room-tag">the spinning logo</div>' +
+      '<div class="panel"><div class="copy">We make software for people who need software. We write words that computer understand so your computer does the thing.</div>' +
+      '<div class="btnrow" id="svc"></div></div>' +
+      '<div class="stub-note" id="pleasedont" style="opacity:0;transition:opacity .4s">please don\'t.</div>';
+    var svc = overlay.querySelector("#svc");
+    services.forEach(function (name, i) {
+      var b = document.createElement("button");
+      b.className = "gbtn"; b.textContent = name;
+      b.setAttribute("aria-pressed", i === 0 ? "true" : "false");
+      b.addEventListener("click", function () {
+        overlay.querySelectorAll("#svc .gbtn").forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
+        b.setAttribute("aria-pressed", "true");
+        var old = emblem.geometry; emblem.geometry = uglyShape(i); old.dispose();
+        if (window.gsap) gsap.fromTo(emblem.scale, { x: .6, y: .6, z: .6 }, { x: 1, y: 1, z: 1, duration: .5, ease: "back.out(2)" });
+      });
+      svc.appendChild(b);
+    });
+
+    return {
+      scene: scene, camera: camera,
+      enter: function () { setCursor(ROOM_ACCENT["services"], "drag to spin"); },
+      update: function (dt) {
+        emblem.rotation.y += spin * dt * 3;
+        emblem.rotation.x += 0.15 * dt;
+        spin += (0.35 - spin) * 0.01;
+        if (thrown) {
+          vy -= 0.9 * dt; py += vy;
+          if (py < -1.15) { py = -1.15; vy = -vy * 0.42; if (Math.abs(vy) < 0.03) vy = 0;
+            if (!tipped) { tipped = true; if (window.gsap) gsap.to(pedestal.rotation, { z: -0.5, duration: 1.1, ease: "bounce.out" }), gsap.to(pedestal.position, { x: -0.6, y: -0.4, duration: 1.1 }); }
+          }
+          emblem.position.y = py;
+          emblem.position.x += (Math.abs(pointer.dx) > 0 ? 0 : 0);
+        } else {
+          emblem.position.y = 0.2 + Math.sin(clock.elapsedTime * 1.1) * 0.06;
+        }
+      },
+      exit: function () {
+        canvas.removeEventListener("pointerdown", onDown);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        disposeScene(scene); env.dispose();
+      }
+    };
+  };
+
+  // ---- SOCIAL PROOF : The Logo Pile --------------------------------
+  Rooms["/social-proof"] = function () {
+    var scene = new T.Scene();
+    scene.background = new T.Color("#eef1f4");
+    var camera = new T.PerspectiveCamera(46, W / H, 0.1, 200);
+    camera.position.set(0, 4.5, 13);
+    camera.lookAt(0, 1.5, 0);
+
+    scene.add(new T.HemisphereLight("#ffffff", "#9fb0c0", 1.0));
+    var d = new T.DirectionalLight("#ffffff", 0.9); d.position.set(5, 10, 7); scene.add(d);
+
+    var floor = new T.Mesh(new T.PlaneGeometry(60, 60),
+      new T.MeshStandardMaterial({ color: "#e4e8ec", roughness: 1 }));
+    floor.rotation.x = -Math.PI / 2; scene.add(floor);
+
+    var defs = [
+      ["A COMPANY", 2.6, 1.4, "#0057b8"],
+      ["ANOTHER\nCOMPANY", 2.8, 1.5, "#3a3a3a"],
+      ["◯", 1.6, 1.6, "#0057b8"],
+      ["A THIRD,\nSLIGHTLY LARGER\nCOMPANY", 4.4, 2.4, "#111111"],
+      ["⟋", 1.8, 1.3, "#8a8a8a"],
+      ["A COMPANY", 2.2, 1.2, "#0057b8"],
+      ["ANOTHER\nCOMPANY", 2.5, 1.4, "#444444"]
+    ];
+    var slabs = [];
+    defs.forEach(function (df, i) {
+      var w = df[1], h = df[2], depth = 0.35;
+      var front = labelTexture(df[0], { fg: df[3], size: df[0].length > 12 ? 34 : 46 });
+      var back = labelTexture('"I gave them money.\nThe software functions."\n— John, Person', { fg: "#555", size: 22, bg: "#f7f7f4" });
+      var mats = [
+        new T.MeshStandardMaterial({ color: "#f0f0ec", roughness: .85 }),
+        new T.MeshStandardMaterial({ color: "#f0f0ec", roughness: .85 }),
+        new T.MeshStandardMaterial({ color: "#f0f0ec", roughness: .85 }),
+        new T.MeshStandardMaterial({ color: "#f0f0ec", roughness: .85 }),
+        new T.MeshStandardMaterial({ map: front, roughness: .8 }),
+        new T.MeshStandardMaterial({ map: back, roughness: .8 })
+      ];
+      var m = new T.Mesh(new T.BoxGeometry(w, h, depth), mats);
+      m.position.set((i - 3) * 1.4 + (Math.random() - .5), 6 + i * 1.6, (Math.random() - .5) * 1.5);
+      m.rotation.set(Math.random() * .4, Math.random() * .6, (Math.random() - .5) * .5);
+      m.userData = { v: new T.Vector3(0, 0, 0), av: new T.Vector3(0, 0, 0), r: Math.max(w, h) * 0.5, hh: h / 2 };
+      scene.add(m); slabs.push(m);
+    });
+
+    var ray = new T.Raycaster();
+    var held = null, plane = new T.Plane(new T.Vector3(0, 0, 1), 0), hit = new T.Vector3();
+    function pick(e) {
+      ray.setFromCamera({ x: pointer.nx, y: pointer.ny }, camera);
+      var hits = ray.intersectObjects(slabs);
+      if (hits.length) {
+        held = hits[0].object;
+        plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new T.Vector3()).negate(), held.position);
+      }
+    }
+    function drop() { if (held) { held.userData.v.copy(new T.Vector3(pointer.dx * 0.02, 0, -pointer.dy * 0.02)); held = null; } }
+    canvas.addEventListener("pointerdown", pick);
+    window.addEventListener("pointerup", drop);
+
+    overlay.innerHTML =
+      '<div class="room-title">Social Proof</div><div class="room-tag">the logo pile</div>' +
+      '<div class="panel"><div class="copy">Trusted by Companies: A Company. Another Company. A Third, Slightly Larger Company. Grab one. Read the back.</div>' +
+      '<div class="btnrow"><button class="gbtn" id="topple">topple the pile</button></div></div>';
+    overlay.querySelector("#topple").addEventListener("click", function () {
+      slabs.forEach(function (s) {
+        s.userData.v.set((Math.random() - .5) * 0.4, Math.random() * 0.2, (Math.random() - .5) * 0.4);
+        s.userData.av.set((Math.random() - .5) * .3, (Math.random() - .5) * .3, (Math.random() - .5) * .3);
+      });
+    });
+
+    return {
+      scene: scene, camera: camera,
+      enter: function () { setCursor(ROOM_ACCENT["social-proof"], "grab"); },
+      update: function (dt) {
+        dt = Math.min(dt, 0.05);
+        if (held) {
+          ray.setFromCamera({ x: pointer.nx, y: pointer.ny }, camera);
+          ray.ray.intersectPlane(plane, hit);
+          held.position.lerp(hit, 0.35);
+          held.userData.v.set(0, 0, 0);
+        }
+        for (var i = 0; i < slabs.length; i++) {
+          var s = slabs[i]; if (s === held) continue;
+          var u = s.userData;
+          u.v.y -= 12 * dt;
+          s.position.addScaledVector(u.v, dt);
+          s.rotation.x += u.av.x * dt; s.rotation.y += u.av.y * dt; s.rotation.z += u.av.z * dt;
+          u.av.multiplyScalar(0.98);
+          if (s.position.y < u.hh) { s.position.y = u.hh; u.v.y *= -0.25; u.v.x *= 0.7; u.v.z *= 0.7; u.av.multiplyScalar(0.6); }
+          for (var j = 0; j < slabs.length; j++) {
+            if (j === i) continue; var o = slabs[j];
+            var diff = new T.Vector3().subVectors(s.position, o.position);
+            var dist = diff.length(), min = u.r + o.userData.r;
+            if (dist < min && dist > 0.0001) {
+              diff.multiplyScalar((min - dist) / dist * 0.5);
+              s.position.add(diff); u.v.addScaledVector(diff, 6);
+            }
+          }
+          s.position.x = Math.max(-14, Math.min(14, s.position.x));
+        }
+      },
+      exit: function () {
+        canvas.removeEventListener("pointerdown", pick);
+        window.removeEventListener("pointerup", drop);
+        disposeScene(scene);
+      }
+    };
+  };
+
+  // ---- CHECKOUT : Pay Money / Do Not Pay Money ---------------------
+  Rooms["/checkout"] = function () {
+    var scene = new T.Scene();
+    scene.background = new T.Color("#0b0a12");
+    var camera = new T.PerspectiveCamera(50, W / H, 0.1, 100);
+    camera.position.set(0, 0, 10);
+
+    var count = 90;
+    var g = new T.BufferGeometry();
+    var pos = new Float32Array(count * 3), rot = new Float32Array(count);
+    for (var i = 0; i < count; i++) {
+      pos[i * 3] = (Math.random() - .5) * 20;
+      pos[i * 3 + 1] = (Math.random() - .5) * 14;
+      pos[i * 3 + 2] = (Math.random() - .5) * 6 - 2;
+      rot[i] = Math.random() * Math.PI;
+    }
+    g.setAttribute("position", new T.BufferAttribute(pos, 3));
+    var pmat = new T.PointsMaterial({ color: "#635bff", size: 0.5, transparent: true, opacity: 0.5, sizeAttenuation: true });
+    var invoices = new T.Points(g, pmat);
+    scene.add(invoices);
+
+    var confettiG = new T.BufferGeometry();
+    var cN = 260, cpos = new Float32Array(cN * 3), cvel = [];
+    for (var k = 0; k < cN; k++) {
+      cpos[k * 3] = 0; cpos[k * 3 + 1] = 0; cpos[k * 3 + 2] = 0;
+      cvel.push(new T.Vector3((Math.random() - .5) * 9, Math.random() * 9 + 2, (Math.random() - .5) * 4));
+    }
+    confettiG.setAttribute("position", new T.BufferAttribute(cpos, 3));
+    var confetti = new T.Points(confettiG, new T.PointsMaterial({ color: "#111", size: 0.28 }));
+    confetti.visible = false; scene.add(confetti);
+    var confettiOn = false, confT = 0;
+
+    overlay.innerHTML =
+      '<div class="room-title">Checkout</div><div class="room-tag">pay money / do not pay money</div>' +
+      '<div class="card" id="card">' +
+        '<h3>GENERIC</h3><div class="muted">generic.bargains</div>' +
+        '<div class="line"><span>One (1) Website</span><span>A Fair Amount of Money</span></div>' +
+        '<div class="line"><span>Emotional Damage Fee</span><span>$0.00 (this time)</span></div>' +
+        '<div class="fakefield" data-no-swap>•••• •••• •••• 4242</div>' +
+        '<div class="cbtns"><button class="primary" id="pay">[ Pay Money ]</button>' +
+        '<button id="nopay">[ Do Not Pay Money ]</button></div>' +
+      '</div>' +
+      '<div class="receipt" id="receipt"></div>' +
+      '<div class="success" id="success"><h2>SUCCESS</h2><div id="succlines"></div>' +
+        '<a class="gbtn" id="emailus" href="mailto:hello@generic.bargains?subject=I%20am%20a%20cool%20client">[ EMAIL US ]</a></div>' +
+      '<div class="reconsider" id="reconsider"><button id="think">THINK ABOUT WHAT YOU\'VE DONE</button></div>';
+
+    var card = overlay.querySelector("#card");
+    var receipt = overlay.querySelector("#receipt");
+    var success = overlay.querySelector("#success");
+    var reconsider = overlay.querySelector("#reconsider");
+
+    function buildReceipt() {
+      var rows = "";
+      for (var r = 0; r < 60; r++) {
+        rows += '<div class="r-row"><span>' +
+          ["LINE ITEM", "SERVICE", "ADJUSTMENT", "SUBTOTAL", "A NUMBER", "TAX (?)", "FEE"][rint(0, 7)] +
+          " " + rint(1000, 9999) + '</span><span>' + rint(1, 900) + "." + rint(10, 99) + '</span></div>';
+      }
+      receipt.innerHTML = '<div style="text-align:center;margin-bottom:8px">GENERIC — INVOICE<br>IT CONTAINS NUMBERS</div>' + rows;
+    }
+    var rY = 0, rDrag = false, rLast = 0;
+    receipt.addEventListener("pointerdown", function (e) { rDrag = true; rLast = e.clientY; });
+    window.addEventListener("pointermove", function (e) { if (!rDrag) return; rY += e.clientY - rLast; rLast = e.clientY; if (rY > 0) { rY = -receipt.offsetHeight + 200; buildReceipt(); } receipt.style.transform = "translateX(-50%) translateY(" + rY + "px)"; });
+    window.addEventListener("pointerup", function () { rDrag = false; });
+
+    overlay.querySelector("#pay").addEventListener("click", function () {
+      card.style.display = "none";
+      success.style.display = "flex";
+      confetti.visible = true; confettiOn = true; confT = 0;
+      var lines = ["You have successfully paid money.", "We have received the money.", "A invoice has been sent to your inbox.", "It contains numbers."];
+      var box = overlay.querySelector("#succlines"); box.innerHTML = "";
+      lines.forEach(function (ln, idx) {
+        var p = document.createElement("p"); box.appendChild(p);
+        setTimeout(function () { p.textContent = ln; }, 500 + idx * 650);
+      });
+      setTimeout(function () { buildReceipt(); receipt.style.display = "block"; rY = -receipt.offsetHeight + 240; receipt.style.transform = "translateX(-50%) translateY(" + rY + "px)"; }, 500 + lines.length * 650);
+      setCursor(ROOM_ACCENT["checkout"], "drag the receipt");
+    });
+    overlay.querySelector("#nopay").addEventListener("click", function () {
+      reconsider.style.display = "flex"; setCursor("#ffffff", "reconsider");
+    });
+    overlay.querySelector("#think").addEventListener("click", function () {
+      reconsider.style.display = "none"; setCursor(ROOM_ACCENT["checkout"], "pay");
+    });
+
+    return {
+      scene: scene, camera: camera,
+      enter: function () { setCursor(ROOM_ACCENT["checkout"], "pay"); },
+      update: function (dt) {
+        invoices.rotation.z += dt * 0.03;
+        var p = invoices.geometry.attributes.position;
+        for (var i = 0; i < count; i++) { p.array[i * 3 + 1] -= dt * 0.4; if (p.array[i * 3 + 1] < -8) p.array[i * 3 + 1] = 8; }
+        p.needsUpdate = true;
+        if (confettiOn) {
+          confT += dt; var cp = confetti.geometry.attributes.position;
+          for (var k = 0; k < cN; k++) {
+            cvel[k].y -= 9 * dt;
+            cp.array[k * 3] += cvel[k].x * dt;
+            cp.array[k * 3 + 1] += cvel[k].y * dt;
+            cp.array[k * 3 + 2] += cvel[k].z * dt;
+          }
+          cp.needsUpdate = true;
+          if (confT > 4) { confettiOn = false; confetti.visible = false; }
+        }
+      },
+      exit: function () { disposeScene(scene); }
+    };
+  };
+
+  // ---- PLACEHOLDER ROOMS ------------------------------------------
+  function placeholder(cfg) {
+    return function () {
+      var scene = new T.Scene();
+      scene.background = new T.Color(cfg.bg);
+      var camera = new T.PerspectiveCamera(45, W / H, 0.1, 100);
+      camera.position.set(0, 0, 7);
+      scene.add(new T.HemisphereLight("#ffffff", cfg.bg, 0.8));
+      var lite = new T.DirectionalLight("#ffffff", 0.7); lite.position.set(3, 4, 5); scene.add(lite);
+      var obj = cfg.build();
+      scene.add(obj);
+
+      overlay.innerHTML =
+        '<div class="room-title" style="color:' + cfg.tc + '">' + cfg.name + '</div>' +
+        '<div class="room-tag" style="color:' + cfg.tc + '">' + cfg.tag + '</div>' +
+        '<div class="panel"><div class="copy ' + (cfg.dark ? "dark" : "") + '">' + cfg.copy + '</div></div>' +
+        '<div class="stub-note" style="color:' + cfg.tc + '">this room is being built. it will be very good. — GENERIC</div>';
+
+      return {
+        scene: scene, camera: camera,
+        enter: function () { setCursor(cfg.accent, cfg.cursor); },
+        update: function (dt) { obj.rotation.y += dt * 0.4; obj.rotation.x += dt * 0.12; },
+        exit: function () { disposeScene(scene); }
+      };
+    };
+  }
+
+  Rooms["/faq"] = placeholder({
+    name: "FAQ", tag: "the accordion", bg: "#f3e9e7", tc: "#7a2018", accent: "#c0392b", dark: false,
+    cursor: "pull", copy: "Q: What is your stack? A: Code. &nbsp; Q: Do you use Agile or Waterfall? A: We work on it until it is finished.",
+    build: function () {
+      var g = new T.Group();
+      for (var i = 0; i < 7; i++) {
+        var m = new T.Mesh(new T.BoxGeometry(3.4, 0.34, 1.6),
+          new T.MeshStandardMaterial({ color: i % 2 ? "#c0392b" : "#8c1f16", roughness: .7 }));
+        m.position.y = (i - 3) * 0.42; m.rotation.z = (i % 2 ? 1 : -1) * 0.05;
+        g.add(m);
+      }
+      return g;
+    }
+  });
+  Rooms["/case-studies"] = placeholder({
+    name: "Case Studies", tag: "the observatory", bg: "#080b16", tc: "#9db4e8", accent: "#6f8fd6", dark: true,
+    cursor: "telescope", copy: "Client X had a problem. We made a solution. Client X made money. End of study.",
+    build: function () {
+      var n = 900, p = new Float32Array(n * 3);
+      for (var i = 0; i < n; i++) { p[i * 3] = (Math.random() - .5) * 12; p[i * 3 + 1] = (Math.random() - .5) * 8; p[i * 3 + 2] = (Math.random() - .5) * 8; }
+      var geo = new T.BufferGeometry(); geo.setAttribute("position", new T.BufferAttribute(p, 3));
+      return new T.Points(geo, new T.PointsMaterial({ color: "#dfe8ff", size: 0.05 }));
+    }
+  });
+  Rooms["/pitch-deck"] = placeholder({
+    name: "Pitch Deck", tag: "the presentation", bg: "#1c1c1c", tc: "#fbbc04", accent: "#fbbc04", dark: true,
+    cursor: "laser pointer", copy: "OUR SOFTWARE WORKS AND YOUR CURRENT SOFTWARE DOES NOT. (End of Presentation. Questions?)",
+    build: function () {
+      var g = new T.Group();
+      for (var i = 0; i < 4; i++) {
+        var m = new T.Mesh(new T.BoxGeometry(3.6, 2.0, 0.12),
+          new T.MeshStandardMaterial({ color: "#fdfdf7", roughness: .9 }));
+        m.position.set((i - 1.5) * 0.25, (i - 1.5) * 0.18, -i * 0.6);
+        g.add(m);
+      }
+      return g;
+    }
+  });
+  Rooms["/process"] = placeholder({
+    name: "The Process", tag: "the machine", bg: "#151007", tc: "#e0b45c", accent: "#c8912f", dark: true,
+    cursor: "a coin", copy: "STEP 3: You give us half the money. STEP 4: We make the website look ridiculously good. If Step 3 does not happen, Step 4 will also not happen.",
+    build: function () {
+      var g = new T.Group();
+      g.add(new T.Mesh(new T.TorusGeometry(1.7, 0.5, 12, 9),
+        new T.MeshStandardMaterial({ color: "#c8912f", metalness: .6, roughness: .4 })));
+      g.add(new T.Mesh(new T.TorusGeometry(0.9, 0.32, 10, 7),
+        new T.MeshStandardMaterial({ color: "#8a5f1c", metalness: .6, roughness: .5 })));
+      return g;
+    }
+  });
+  Rooms["/team"] = placeholder({
+    name: "Team", tag: "the busts", bg: "#efe6df", tc: "#7a5340", accent: "#b07a56", dark: false,
+    cursor: "default", copy: "CEO: a guy named Dave who owns a laptop. CTO: another guy who types faster than Dave. Lead Designer: complains about kerning. Head of HR: there is no HR.",
+    build: function () {
+      return new T.Mesh(new T.IcosahedronGeometry(1.8, 1),
+        new T.MeshStandardMaterial({ color: "#c8a08a", flatShading: true, roughness: .9 }));
+    }
+  });
+  Rooms["/terms"] = placeholder({
+    name: "Terms & Scope", tag: "the fine print", bg: "#111111", tc: "#e9e9e2", accent: "#e9e9e2", dark: true,
+    cursor: "fountain pen", copy: 'What you think you signed: "Unlimited revisions." What you actually signed: 2 revisions. After that, we charge you for every breath we take in your presence.',
+    build: function () {
+      var g = new T.Group();
+      for (var i = 0; i < 10; i++) {
+        var m = new T.Mesh(new T.BoxGeometry(2.4, 0.06, 0.02),
+          new T.MeshStandardMaterial({ color: "#e9e9e2", roughness: 1 }));
+        m.position.set(0, 2 - i * 0.18, -i * 0.4);
+        g.add(m);
+      }
+      return g;
+    }
+  });
+
+  var ROOM_ACCENT = {
+    "services": "#8a929c", "faq": "#c0392b", "case-studies": "#6f8fd6",
+    "social-proof": "#0057b8", "pitch-deck": "#fbbc04", "process": "#c8912f",
+    "team": "#b07a56", "terms": "#111111", "checkout": "#635bff"
+  };
+
+  // ---------------------------------------------------------------- router
+  var current = null, transitioning = false;
+  var LINES = ["this should be instant", "loading things", "almost",
+    "why is this taking so long, it's just a website", "retrieving the thing",
+    "the thing is loading", "please wait. or don't.", "this page loaded in 0.00001 seconds"];
+  var loaderEl = document.getElementById("loader");
+  var loaderLine = document.getElementById("loader-line");
+
+  function routeFromHash() {
+    var h = location.hash.replace(/^#/, "");
+    if (!h || h === "/") return "/";
+    return Rooms["/" + h.replace(/^\//, "")] ? "/" + h.replace(/^\//, "") : "/";
+  }
+
+  async function go(route) {
+    if (transitioning) return;
+    transitioning = true;
+    loaderLine.textContent = LINES[rint(0, LINES.length)];
+    loaderEl.classList.add("on");
+    await raf(120);
+    if (window.gsap) gsap.to([canvas, overlay], { opacity: 0, duration: 0.25 });
+    await raf(260);
+    try {
+      if (current && current.exit) current.exit();
+      overlay.innerHTML = "";
+      current = Rooms[route]();
+      if (current.enter) current.enter();
+      if (biscuitMode) swapCookies(overlay);
+      resize();
+    } catch (err) {
+      overlay.innerHTML = '<div class="room-title">This page is broken.</div>' +
+        '<div class="panel"><div class="copy">It was working earlier. We will fix it so it stops breaking.</div></div>';
+      current = null;
+    }
+    await raf(rint(420, 900));
+    loaderEl.classList.remove("on");
+    canvas.style.opacity = ""; overlay.style.opacity = "";
+    if (window.gsap) gsap.fromTo([canvas, overlay], { opacity: 0 }, { opacity: 1, duration: 0.4 });
+    transitioning = false;
+    document.getElementById("netnav").value = "#" + route;
+  }
+
+  window.addEventListener("hashchange", function () { go(routeFromHash()); });
+  document.getElementById("netnav").addEventListener("change", function (e) {
+    if (location.hash === e.target.value || (!location.hash && e.target.value === "#/")) go(routeFromHash());
+    else location.hash = e.target.value;
+  });
+
+  // ---------------------------------------------------------------- resize
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    renderer.setSize(W, H);
+    if (current && current.camera) {
+      current.camera.aspect = W / H;
+      current.camera.updateProjectionMatrix();
+    }
+  }
+  window.addEventListener("resize", resize);
+
+  // ---------------------------------------------------------------- loop
+  function frame() {
+    var dt = Math.min(clock.getDelta(), 0.06);
+    var t = clock.elapsedTime;
+    if (current && current.update) {
+      try { current.update(dt, t); } catch (err) { /* keep rendering */ }
+    }
+    if (current && current.scene && current.camera) renderer.render(current.scene, current.camera);
+    cursorTick();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------------------------------------------------------------- cookies
+  var biscuitMode = false;
+  function swapStr(s) {
+    return s.replace(/COOKIES/g, "BISCUITS").replace(/COOKIE/g, "BISCUIT")
+      .replace(/Cookies/g, "Biscuits").replace(/Cookie/g, "Biscuit")
+      .replace(/cookies/g, "biscuits").replace(/cookie/g, "biscuit");
+  }
+  function swapCookies(rootNode) {
+    var w = document.createTreeWalker(rootNode, NodeFilter.SHOW_TEXT, null);
+    var arr = [], n;
+    while ((n = w.nextNode())) {
+      var p = n.parentNode; if (!p || p.nodeName === "SCRIPT" || p.nodeName === "STYLE") continue;
+      if (/cookie/i.test(n.nodeValue)) arr.push(n);
+    }
+    arr.forEach(function (nn) { nn.nodeValue = swapStr(nn.nodeValue); });
+  }
+  var ckNote = document.getElementById("cookie-note");
+  var ckA = document.getElementById("ck-accept"), ckB = document.getElementById("ck-biscuit");
+  ckA.addEventListener("click", function () { ckNote.textContent = "Noted."; ckA.hidden = true; ckB.hidden = true; });
+  ckB.addEventListener("click", function () {
+    biscuitMode = true;
+    swapCookies(document.body);
+    ckNote.textContent = "Fine. A low-poly biscuit has been added to the current physics scene.";
+    ckA.hidden = true; ckB.hidden = true;
+  });
+
+  // ---------------------------------------------------------------- boot
+  go(routeFromHash());
+  frame();
+})();
+</script>
