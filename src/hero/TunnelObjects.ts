@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
 import { DRAWN_GLSL } from './Drawn'
+import { REVEAL_GLSL } from './RevealMask'
 import { realMaterial, addFeltShells } from './ObjectLook'
 import { LAB_OBJECTS, DEFAULT_CHOICE, loadChoices, buildObject } from '../lab/main'
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -31,6 +32,14 @@ export type TunnelLook = 'drawn' | 'real'
 /** TEST (/hero-tunnel-portrait.html): a picture hidden behind the drawn tunnel — Danilo, in chalk —
  *  that the objects reveal as they pass (each object a window onto it). Screen-fixed, cover-fitted.
  *  `tPortrait` is an ink map (white = ink); uPortraitOn 0 keeps the objects as they are */
+/** TEST (/hero-tunnel-secret-reveal.html): the hero's cursor holes, in the tunnel — through them the
+ *  drawn objects show as they really are. `tRealObj` is the real objects rendered from the same
+ *  camera (ShaderHero draws them each frame while there's a trail); uRealOn 0 = no holes */
+export const REAL_HOLE = {
+  tRealObj: { value: null as THREE.Texture | null },
+  uRealOn: { value: 0 },
+  uRealSat: { value: 1.5 }, // the colours' saturation through the holes (1 = as rendered)
+}
 export const SRC_MAT = new WeakMap<THREE.BufferGeometry, THREE.MeshStandardMaterial>()
 export const PORTRAIT = {
   tPortrait: { value: null as THREE.Texture | null },
@@ -114,7 +123,7 @@ export class TunnelObjects {
   private SOURCES: { url: string; objects: string[][] }[]
   private set: TunnelSet
 
-  constructor(readonly look: TunnelLook, private drawnU: Record<string, THREE.IUniform>, private renderer: THREE.WebGLRenderer, set: TunnelSet = 'current') {
+  constructor(readonly look: TunnelLook, private drawnU: Record<string, THREE.IUniform>, private renderer: THREE.WebGLRenderer, set: TunnelSet = 'current', private revealU?: Record<string, THREE.IUniform>) {
     this.SOURCES = sources(set)
     this.set = set
     this.ready = this.load()
@@ -285,7 +294,7 @@ export class TunnelObjects {
   private material(src: THREE.MeshStandardMaterial): THREE.Material {
     if (this.look === 'drawn') {
       return new THREE.ShaderMaterial({
-        uniforms: { ...this.drawnU, uFog: this.fog, ...PORTRAIT },
+        uniforms: { ...this.drawnU, uFog: this.fog, ...PORTRAIT, ...(this.revealU ? { ...this.revealU, ...REAL_HOLE } : {}) },
         vertexShader: VERT,
         fragmentShader: /* glsl */ `
           precision highp float;
@@ -293,7 +302,10 @@ export class TunnelObjects {
           uniform sampler2D tPortrait;
           uniform float uPortraitOn;
           uniform float uPortraitAspect;
-          uniform float uViewAspect;
+          ${this.revealU ? `${REVEAL_GLSL}
+          uniform sampler2D tRealObj;
+          uniform float uRealOn;
+          uniform float uRealSat;` : 'uniform float uViewAspect;'}
           uniform float uHFlow;
           uniform vec2 uHMouse;
           uniform float uHMouseAmt;
@@ -342,6 +354,15 @@ export class TunnelObjects {
               col = mix(drawnPaper(suv), D_INK, ink);
             }
             col *= 1.0 - smoothstep(uFog.x, uFog.y, vDepth);
+            // (most of the screen has no trail at all: the hole's taps and noise skipped there)
+            ${this.revealU ? `if (uRealOn > 0.5 && texture2D(uRevealDye, suv).r * 3.9 > 0.05) {
+              // the hero's holes, chalk-edged: through them, the same object as it really is (the
+              // real render is stored sRGB and read back linear — encoded again for the screen)
+              vec3 rl = texture2D(tRealObj, suv).rgb;
+              rl = mix(rl * 12.92, 1.055 * pow(rl, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, rl));
+              rl = clamp(mix(vec3(dot(rl, vec3(0.299, 0.587, 0.114))), rl, uRealSat), 0.0, 1.0); // more vivid (Danilo)
+              col = revealApplyWith(col, rl, suv);
+            }` : ''}
             gl_FragColor = vec4(col, 1.0);
           }`,
         side: THREE.DoubleSide,

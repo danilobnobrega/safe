@@ -10,8 +10,9 @@ import { CrumbRain, CRUMB_VIEW_H } from '../ui/CrumbRain'
 import { FluidSim } from './FluidSim'
 import { RevealMask, REVEAL_GLSL } from './RevealMask'
 import { Drawn, DRAWN_GLSL } from './Drawn'
-import { TunnelObjects, WORLD_SCALE, PORTRAIT, SRC_MAT, type TunnelLook, type TunnelSet } from './TunnelObjects'
+import { TunnelObjects, WORLD_SCALE, PORTRAIT, SRC_MAT, REAL_HOLE, type TunnelLook, type TunnelSet } from './TunnelObjects'
 import { realMaterial } from './ObjectLook'
+import { PaperDesk } from '../behind/PaperDesk'
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
 import { LetterSwap, type Slot } from './LetterSwap'
 
@@ -49,6 +50,7 @@ const SPIN_CAP = 2.129
 /** scroll fraction at which the rotation + recede freeze and the camera starts its
  *  forward dive */
 const FREEZE_P = 0.61
+const PAPER_AT_P = FREEZE_P - 0.004 // (/hero-paper) the cubes all but locked: that frame is printed
 // the reveal holes (RevealMask) fade out over the first stretch of door motion —
 // noth.in's 1-fade² splat falloff + faster dye bleed, fully cleared by here
 const REVEAL_FADE_P = 0.2
@@ -82,6 +84,8 @@ const FEAT_SIZE = 1.5 // each object's longest side, world
 const FEAT_X = 3.2 // how far off the axis, world
 const TUNNEL_FOG_FAR = 78 // photos dissolve into the dark by this distance (tunnel running)
 const TUNNEL_FOG_INTRO = 210 // fog pushed back during the one-by-one reveal so it reads
+const REAL_RES = 0.75
+const REAL_BG = new THREE.Color(0xfdfdfc) // (/hero-tunnel-secret-reveal) behind the cursor's holes, as the hero's
 const DRAWN_OBJ_SCALE = 16 // /hero-tunnel-drawn.html: metres -> tunnel units — kept at what it was when Danilo last saw it (the real tunnel's has grown since)
 const TUNNEL_OBJ_EVERY = 2 // an objects tunnel fills one slot in this many (72 slots -> 36 objects)
 const TUNNEL_PLANES = 72 // enough to fill the corridor + a buffer — denser, so it doesn't feel sparse at high speed
@@ -243,7 +247,39 @@ export class ShaderHero {
   private tunnelRandom = false
   private drawnScale = 16
   private drawnEvery = 1
+  /** TEST (/hero-tunnel-secret.html): a few objects kept still at fixed spots of the screen, never
+   *  drawn themselves — they're written into the drawn outline pass instead, so the tunnel's chalk
+   *  objects draw THEIR outlines wherever they pass over them (the accident Danilo liked, on purpose) */
+  private secretSpec: { name: string; x: number; y: number; size: number; rot?: number }[] = []
+  private secretScene = new THREE.Scene()
+  private secretRoot = new THREE.Group()
+  private secretCam?: THREE.PerspectiveCamera
   private tunnelHoverColor = false
+  // (/hero-tunnel-secret-reveal.html) the hero's cursor holes over the tunnel's drawn objects: each
+  // one's real twin, drawn to realRT from the same camera, shows through them
+  private tunnelReveal = false
+  private hoverEnvP?: Promise<THREE.Texture>
+  private realScene = new THREE.Scene()
+  private realInst: { mesh: THREE.InstancedMesh; part: THREE.Matrix4; items: number[] }[] = []
+  private realReach: number[] = []
+  private realRT?: THREE.WebGLRenderTarget
+  private realIdle = 1e9 // s since the cursor last moved (no trail left after ~4 s: no real render)
+  private realLast = new THREE.Vector2()
+  private realClear = new THREE.Color()
+  private realPath: { x: number; y: number; t: number }[] = [] // the cursor's last few seconds, in screen-heights
+  private realClock = 0
+  private secretDirty = true
+  private realOdd = false
+  // (/hero-paper.html) behind the cubes, a desk instead of the tunnel — see src/behind/PaperDesk.ts.
+  // snapTex: the hero frame from the moment the scroll began (printed on the sheet)
+  private paper?: PaperDesk
+  private paperShown = false
+  // (/hero-paper-direct.html) no cubes: the first scroll turns the hero into the sheet at once
+  private paperDirect = false
+  private paperOn = false
+  private snapTex?: THREE.FramebufferTexture
+  private behindDone = false
+  private realP = new THREE.Vector3()
   private hoverRay = new THREE.Raycaster()
   private hoverNdc = new THREE.Vector2()
   private hovered: THREE.Object3D | null = null
@@ -407,7 +443,7 @@ export class ShaderHero {
   private approachBg?: THREE.Mesh
   private approachBgMat?: THREE.ShaderMaterial
 
-  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number } = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number; tunnelReveal?: boolean; behind?: 'paper'; paperDirect?: boolean; paperPose?: number[]; secretObjects?: { name: string; x: number; y: number; size: number; rot?: number }[] } = {}) {
     this.canvas = canvas
     // Size to the canvas's own laid-out box — and pass the RAW fractional size to
     // setSize. Rounding it here makes the backing store a pixel short of the box,
@@ -463,13 +499,16 @@ export class ShaderHero {
     // there at once like it)
     this.drawnScale = opts.drawnScale ?? DRAWN_OBJ_SCALE
     this.drawnEvery = opts.drawnEvery ?? 1
+    this.secretSpec = opts.secretObjects ?? []
     this.tunnelHoverColor = !!opts.tunnelHoverColor
-    if (this.tunnelHoverColor) {
-      void new RGBELoader().loadAsync('/hero/tunnel/studio_1k.hdr').then((hdr) => {
+    this.tunnelReveal = !!opts.tunnelReveal
+    if (this.tunnelHoverColor || this.tunnelReveal) {
+      this.hoverEnvP = new RGBELoader().loadAsync(`${import.meta.env.BASE_URL}hero/tunnel/studio_1k.hdr`).then((hdr) => {
         hdr.mapping = THREE.EquirectangularReflectionMapping
         const pm = new THREE.PMREMGenerator(this.renderer)
         this.hoverEnv = pm.fromEquirectangular(hdr).texture
         pm.dispose()
+        return this.hoverEnv
       })
     }
     if (opts.tunnelPortrait) {
@@ -481,7 +520,29 @@ export class ShaderHero {
       })
     }
     if (this.tunnelFeatured) this.textsDone = false // the wormhole waits for the last one
-    if (opts.tunnelObjects) this.tunnelObjs = new TunnelObjects(opts.tunnelObjects, this.drawnU as unknown as Record<string, THREE.IUniform>, this.renderer, opts.tunnelSet)
+    this.paperDirect = !!opts.paperDirect
+    if (opts.behind === 'paper' && this.drawn) {
+      this.paper = new PaperDesk(this.renderer, this.drawn, () => ({ w: this.W, h: this.H }), opts.paperPose)
+      // a ball in the bin: the dive ends in its dark — the wormhole to the next page opens there
+      // the dive into the bin starts: the next page's files are warmed while it plays
+      this.paper.onDive = () => {
+        for (const href of [this.wormTo, ...this.wormPrefetch]) {
+          if (!href) continue
+          const l = document.createElement('link')
+          l.rel = 'prefetch'
+          l.href = href
+          document.head.appendChild(l)
+        }
+      }
+      // ...and at its bottom, all dark: straight to the next page, which comes out of the same dark
+      // (no wormhole — Danilo, 2026-10-11)
+      this.paper.onDone = () => {
+        this.behindDone = true
+        console.info('[hero] paper: in the bin — to the garage')
+        if (this.wormTo) window.location.href = this.wormTo + (this.wormTo.includes('?') ? '&' : '?') + 'from=bin'
+      }
+    }
+    if (opts.tunnelObjects) this.tunnelObjs = new TunnelObjects(opts.tunnelObjects, this.drawnU as unknown as Record<string, THREE.IUniform>, this.renderer, opts.tunnelSet, opts.tunnelReveal ? (this.reveal.uniforms as unknown as Record<string, THREE.IUniform>) : undefined)
     this.weAreDodge = !!opts.weAreDodge
     this.sign = opts.sign ?? 'classic'
     this.wormTo = opts.wormTo
@@ -956,7 +1017,7 @@ export class ShaderHero {
     // TEST: each photo's slot carries one of Danilo's things instead (the plane itself unseen —
     // its opacity still drives the object's appearing)
     // (an objects tunnel never shows the photo planes — not even while its models load)
-    if (this.tunnelObjs) for (const m of this.galleryPhotos) (m.material as THREE.MeshBasicMaterial).visible = false
+    if (this.tunnelObjs || this.paper) for (const m of this.galleryPhotos) (m.material as THREE.MeshBasicMaterial).visible = false
     void this.tunnelObjs?.whenReady().then(() => {
       const objs = this.tunnelObjs!
       if (this.tunnelFeatured) {
@@ -982,6 +1043,7 @@ export class ShaderHero {
         this.buildTunnelInstances(objs)
         return
       }
+      if (this.secretSpec.length) this.buildSecrets(objs)
       this.galleryPhotos.forEach((m, i) => {
         ;(m.material as THREE.MeshBasicMaterial).visible = false
         if (i % this.drawnEvery) return
@@ -989,7 +1051,10 @@ export class ShaderHero {
         const base = Math.max(s0.x, s0.y)
         s0.set(base, base, 1)
         m.scale.copy(s0)
-        const o = objs.make(i)
+        const o = objs.make(i / this.drawnEvery)
+        o.userData.kind = (i / this.drawnEvery) % objs.count // (i itself: with drawnEvery 2 and an even count, every other kind never came — the shoe among them)
+        // drawn only when on screen and not lost in the fog (it was drawn always: the frame's main cost)
+        o.traverse((c) => void ((c as THREE.Mesh).isMesh && ((c as THREE.Mesh).frustumCulled = true)))
         // each tumbles on its own axis, at its own pace — a real turn, so the light runs over it
         // and its sides come round (a slow spin about the vertical only read as a flat cut-out)
         const r = (k: number) => ((i * k) % 1) - 0.5
@@ -1019,6 +1084,7 @@ export class ShaderHero {
         this.gallery.add(o)
         this.tunnelItems.push(o)
       })
+      if (this.tunnelReveal) void this.buildRealTwins(objs)
     })
     this.doorScene.fog = new THREE.Fog(0x000000, 0.1, TUNNEL_FOG_INTRO)
 
@@ -1633,6 +1699,155 @@ export class ShaderHero {
   /** TEST (/hero-tunnel-*): each slot's object follows its plane's opacity — it grows in where the
    *  photo faded in, shrinks away where it faded — and turns slowly on its own axis, counter to
    *  the slot's roll so it stays upright */
+  /** the secret objects, each at its spot: x / y in screen units (-1..1), size its longest side as
+   *  a share of the screen's height, seen by a camera of their own that never moves */
+  /** each drawn tunnel object's real twin (its model's own materials, the studio light), for the
+   *  cursor's holes */
+  private async buildRealTwins(objs: TunnelObjects): Promise<void> {
+    const env = (await this.hoverEnvP) ?? null
+    // its reach (a sphere round its centre, in world units at its tunnel size): only the ones whose
+    // reach comes near the cursor's recent path can be inside a hole
+    this.realReach = this.tunnelItems.map((o) => new THREE.Box3().setFromObject(o, true).getBoundingSphere(new THREE.Sphere()).radius)
+    // every copy of a kind drawn at once (as the real tunnel does — what keeps it at 60 fps): one
+    // InstancedMesh per part of each kind, in its model's own material
+    for (let k = 0; k < objs.count; k++) {
+      const items = this.tunnelItems.map((o, j) => (o.userData.kind === k ? j : -1)).filter((j) => j >= 0)
+      if (!items.length) continue
+      for (const part of objs.parts(k)) {
+        const src = SRC_MAT.get(part.geometry)
+        // (no source: the ball's felt shells, already real)
+        const mat = src ? realMaterial(src, env) : part.material
+        const mesh = new THREE.InstancedMesh(part.geometry, mat, items.length)
+        mesh.frustumCulled = false
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        mesh.count = 0
+        this.realScene.add(mesh)
+        this.realInst.push({ mesh, part: part.matrix, items })
+      }
+    }
+    this.realRT = new THREE.WebGLRenderTarget(1, 1)
+    this.realRT.texture.colorSpace = THREE.SRGBColorSpace
+    REAL_HOLE.tRealObj.value = this.realRT.texture
+    // as in the hero, the holes open anywhere — not only on the objects: on the tunnel's dark,
+    // behind everything, a screen-wide layer cut by the same trail, showing the real side (the
+    // hero's near-white backdrop, the real objects on it)
+    const bg = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.ShaderMaterial({
+        uniforms: { ...this.reveal.uniforms, ...REAL_HOLE },
+        vertexShader: `
+          varying vec2 vSuv;
+          void main() { vSuv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.9999, 1.0); }`,
+        fragmentShader: `
+          precision highp float;
+          uniform sampler2D tRealObj;
+          uniform float uRealOn;
+          uniform float uRealSat;
+          varying vec2 vSuv;
+          ${REVEAL_GLSL}
+          void main() {
+            if (uRealOn < 0.5 || texture2D(uRevealDye, vSuv).r * 3.9 < 0.05) discard; // (no trail here)
+            vec3 rl = texture2D(tRealObj, vSuv).rgb;
+            rl = mix(rl * 12.92, 1.055 * pow(rl, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, rl));
+              rl = clamp(mix(vec3(dot(rl, vec3(0.299, 0.587, 0.114))), rl, uRealSat), 0.0, 1.0); // more vivid (Danilo)
+            gl_FragColor = vec4(revealApplyWith(vec3(0.0), rl, vSuv), 1.0);
+            ${location.search.includes('realdbg') ? 'gl_FragColor = vec4(rl, 1.0);' : ''}
+          }`,
+        depthTest: false,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending, // (over the tunnel's black: just the hole and its chalk edge)
+      }),
+    )
+    bg.frustumCulled = false
+    bg.renderOrder = -10 // first: everything in the tunnel draws over it
+    this.gallery.add(bg)
+    // compiled now, all of them (three compiles only what's visible: each kind's first appearance in
+    // a hole was a hitch)
+    this.renderer.compile(this.realScene, this.doorCam)
+  }
+
+  /** draw the real twins where the drawn objects are, while the cursor's trail may still be open */
+  private renderRealTwins(dt: number): void {
+    this.realClock += dt
+    const aspect = this.W / this.H
+    if (this.target.distanceToSquared(this.realLast) > 0) {
+      this.realIdle = 0
+      this.realPath.push({ x: this.target.x * aspect, y: this.target.y, t: this.realClock })
+    } else this.realIdle += dt
+    this.realLast.copy(this.target)
+    while (this.realPath.length && this.realClock - this.realPath[0].t > 4) this.realPath.shift()
+    const rt = this.realRT
+    // the real side is drawn every other frame (the felted ball alone is 0.4M triangles a copy, and
+    // the tunnel already draws it in chalk): the objects turn slowly — a frame behind doesn't show
+    this.realOdd = !this.realOdd
+    if (location.search.includes('realdbg')) { this.realIdle = 0; this.realPath = [{ x: 0, y: 0, t: this.realClock }]; for (const q of [[1,0],[0,1],[1,1],[0.5,0.5],[1.7,0.5],[1.7,0],[1.7,1]]) this.realPath.push({ x: q[0], y: q[1], t: this.realClock }) }
+    if (!rt || !this.gallery.visible || this.realIdle > 4) {
+      REAL_HOLE.uRealOn.value = 0
+      return
+    }
+    // at 3/4 of the screen's resolution: the frame's single biggest cost, and through a hole the
+    // difference doesn't show — what keeps the trail at 60 fps
+    if (this.realOdd && REAL_HOLE.uRealOn.value === 1) return
+    const pr = this.renderer.getPixelRatio() * REAL_RES
+    const w = Math.round(this.W * pr)
+    const h = Math.round(this.H * pr)
+    if (rt.width !== w || rt.height !== h) rt.setSize(w, h)
+    const fogFar = (this.doorScene.fog as THREE.Fog | null)?.far ?? Infinity
+    const show = this.tunnelItems.map((o, i) => {
+      // (lost in the fog: nothing of it to show)
+      if (!o.visible || this.doorCam.position.z - o.position.z > fogFar) return false
+      // on screen: where it is and how far it reaches, in screen-heights; drawn only if that comes
+      // within a brush (+ the fluid's drift) of where the cursor has been
+      this.realP.copy(o.position).project(this.doorCam)
+      const d = this.doorCam.position.distanceTo(o.position)
+      const reach = this.realReach[i] / (2 * d * Math.tan(THREE.MathUtils.degToRad(this.doorCam.fov / 2))) + 0.12
+      const sx = (this.realP.x * 0.5 + 0.5) * aspect
+      const sy = this.realP.y * 0.5 + 0.5
+      if (this.realP.z >= 1 || !this.realPath.some((q) => (q.x - sx) ** 2 + (q.y - sy) ** 2 < reach * reach)) return false
+      o.updateMatrixWorld()
+      return true
+    })
+    for (const inst of this.realInst) {
+      let n = 0
+      for (const j of inst.items) if (show[j]) inst.mesh.setMatrixAt(n++, this._tm.multiplyMatrices(this.tunnelItems[j].matrixWorld, inst.part))
+      inst.mesh.count = n
+      inst.mesh.instanceMatrix.needsUpdate = true
+    }
+    // the real side, as the hero's: its backdrop (LetterSwap's #fdfdfc), and on it the objects exactly
+    // as the colour tunnels draw them — the tunnel's own fog darkening them with distance (without
+    // it, or with a white one, they lost their depth of colour)
+    this.realScene.fog = this.doorScene.fog
+    this.renderer.getClearColor(this.realClear)
+    const a = this.renderer.getClearAlpha()
+    this.renderer.setClearColor(REAL_BG, 1)
+    this.renderer.setRenderTarget(rt)
+    this.renderer.render(this.realScene, this.doorCam)
+    this.renderer.setRenderTarget(null)
+    this.renderer.setClearColor(this.realClear, a)
+    REAL_HOLE.uRealOn.value = 1
+  }
+
+  private buildSecrets(objs: TunnelObjects): void {
+    const D = 10
+    this.secretCam = new THREE.PerspectiveCamera(this.doorCam.fov, this.doorCam.aspect, 0.1, 100)
+    this.secretCam.position.set(0, 0, D)
+    this.secretCam.lookAt(0, 0, 0)
+    const halfH = D * Math.tan(THREE.MathUtils.degToRad(this.secretCam.fov / 2))
+    for (const s of this.secretSpec) {
+      const o = objs.makeNamed(s.name)
+      if (!o) {
+        console.warn('[hero] secret object not found', s.name)
+        continue
+      }
+      const box = new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3())
+      o.scale.setScalar((s.size * 2 * halfH) / Math.max(box.x, box.y, box.z))
+      o.position.set(s.x * halfH * this.secretCam.aspect, s.y * halfH, 0)
+      o.rotation.set(0.5, s.rot ?? 0.6, 0.15)
+      this.secretRoot.add(o)
+    }
+    this.secretScene.add(this.secretRoot)
+  }
+
   /** (/hero-tunnel-portrait) the object under the cursor shows its real colours (the drawn
    *  material swapped for the model's own; back when the cursor leaves) */
   private stepTunnelHover(): void {
@@ -1693,7 +1908,7 @@ export class ShaderHero {
         const st = THREE.MathUtils.smoothstep(this.revealClock, at, at + 0.4)
         op = this.revealClock < 0 ? 0 : st > 0.001 ? Math.min(1, op / st) : this.inWormhole ? op : 1
       }
-      o.visible = op > 0.005
+      o.visible = op > 0.005 && (!fog || this.doorCam.position.z - m.position.z < fog.far + 6)
       if (!o.visible) continue
       o.position.copy(m.position)
       if (this.tunnelRandom) o.position.set(o.userData.rx as number, o.userData.ryy as number, m.position.z)
@@ -2055,6 +2270,18 @@ export class ShaderHero {
     return [Math.max(2, Math.round(this.W * this.dpr)), Math.max(2, Math.round(this.H * this.dpr))]
   }
 
+  /** the visible frame's pixels, as they are on screen, into snapTex */
+  private captureSnap(): void {
+    const [bw, bh] = this.bufSize()
+    if (!this.snapTex || this.snapTex.image.width !== bw || this.snapTex.image.height !== bh) {
+      this.snapTex?.dispose()
+      this.snapTex = new THREE.FramebufferTexture(bw, bh)
+      // raw bytes (the canvas is plain RGBA8: an sRGB texture can't be copied into); PaperDesk decodes
+      this.snapTex.colorSpace = THREE.NoColorSpace
+    }
+    this.renderer.copyFramebufferToTexture(this.snapTex, new THREE.Vector2(0, 0))
+  }
+
   private clearTargets(): void {
     this.fluid.clear()
   }
@@ -2210,7 +2437,7 @@ export class ShaderHero {
       // they're shut again); the holes it already made stay and close on their own, riding the
       // cubes as they swing (see restOn)
       const doorsShut = doorE <= DOORS_SHUT_E
-      this.reveal.step(dt, this.target, this.pointerInside && doorsShut, this.W / this.H, 0)
+      this.reveal.step(dt, this.target, this.pointerInside && (doorsShut || (this.tunnelReveal && this.gallery.visible)), this.W / this.H, 0)
     } else {
       this.reveal.step(dt, this.target, this.pointerInside, this.W / this.H, THREE.MathUtils.clamp(P / REVEAL_FADE_P, 0, 1))
     }
@@ -2223,7 +2450,9 @@ export class ShaderHero {
     // the cursor knocks the pile around (only where CrumbRain was built with push)
     this.crumbs.setPointer(this.pointerInside && doorE <= DOORS_SHUT_E && (!this.crumbPushHold || this.down > 0.5) ? this.target : null)
     if (this.crumbGrabCursor) this.stepGrabCursor(doorE <= DOORS_SHUT_E)
-    this.crumbs.step(dt)
+    // (/hero-paper*: once the desk is up the pile is gone from view — and the desk's own physics
+    // shares the one Rapier instance; one world stepping at a time)
+    if (!(this.paper && (this.paperOn || this.paperShown))) this.crumbs.step(dt)
 
     // rest pose for the pinned reveal: refreshed while the doors are shut, frozen once they move
     this.restLive = doorE <= DOORS_SHUT_E
@@ -2237,6 +2466,16 @@ export class ShaderHero {
     const pastDoors = this.progress >= TUNNEL_ARM_P
     this.renderer.shadowMap.autoUpdate = !pastDoors
     this.leftHinge.visible = this.rightHinge.visible = !pastDoors
+    if (this.drawn && pastDoors && this.secretCam) {
+      this.drawn.step(dt)
+      // they stand still: drawn again only when the view changed or the doors' pass drew over them
+      if (this.secretDirty || this.secretCam.aspect !== this.doorCam.aspect) {
+        this.secretCam.aspect = this.doorCam.aspect
+        this.secretCam.updateProjectionMatrix()
+        this.drawn.normalPass(this.secretScene, this.secretCam, [this.secretRoot])
+        this.secretDirty = false
+      }
+    } else this.secretDirty = true
     if (this.drawn && !pastDoors) {
       this.drawn.step(dt)
       this.drawn.normalPass(this.doorScene, this.doorCam, [this.leftHinge, this.rightHinge, ...(this.drawnCrumbs ? [this.crumbs.stage] : []), ...this.weLetters.map((w) => w.mesh), ...(this.tunnelObjs?.look === 'drawn' ? this.tunnelItems : [])])
@@ -2249,6 +2488,27 @@ export class ShaderHero {
       this.renderer.setSize(box.width, box.height, false)
       this.renderer.setViewport(0, 0, this.W, this.H)
     }
+    // the frame that becomes the sheet: /hero-paper-direct, the hero as it was when the scroll began;
+    // /hero-paper, the cubes locked on "We do things for people" (FREEZE_P) — never the way through
+    if (this.paper && this.snapTex && !this.paperOn && (this.paperDirect ? this.progressTarget > 0.01 : this.progress >= PAPER_AT_P)) {
+      this.paperOn = true
+      console.info('[hero] paper: the frame becomes the sheet')
+    }
+    if (this.paper && this.paperOn) { // (once done it stays on its black until the next page)
+      // through the cubes: the desk (the print is the hero as it was when the scroll began)
+      if (this.snapTex && !this.paperShown) {
+        this.paperShown = true
+        this.paper.setPrint(this.snapTex, this.W / this.H, !this.paperDirect)
+        this.paper.show(true)
+      }
+      this.drawn!.step(dt)
+      this.paper.step(dt)
+      this.paper.render()
+      this.prevPointer.copy(this.pointer)
+      return
+    }
+    if (this.tunnelReveal) this.renderRealTwins(dt)
+    if (location.search.includes('realdbg')) for (const o of this.tunnelItems) o.visible = false
     this.renderer.render(this.doorScene, this.doorCam)
     if (this.tunnelInst.length && this.gallery.visible) {
       this.objScene.fog = this.doorScene.fog
@@ -2256,6 +2516,8 @@ export class ShaderHero {
       this.renderer.render(this.objScene, this.doorCam)
       this.renderer.autoClear = true
     }
+    // (/hero-paper) keep the last frame from before the scroll began: it's what gets printed
+    if (this.paper && !this.paperOn && (this.paperDirect ? this.progressTarget <= 0.01 : true)) this.captureSnap()
 
     this.prevPointer.copy(this.pointer)
   }
@@ -2270,6 +2532,11 @@ export class ShaderHero {
     }
     if (this.inTunnel) {
       this.stepTunnel(dt)
+      return
+    }
+    // (/hero-paper) no tunnel while the desk is up
+    if (this.paper && !this.behindDone) {
+      this.gallery.visible = false
       return
     }
     // photos start appearing just before the zoom-in; scrolling back drops them
@@ -2645,7 +2912,9 @@ export class ShaderHero {
 
   private onWheel = (e: WheelEvent): void => {
     if (this.locked || this.inWormhole) return
+    if (this.paperOn && !this.behindDone) return
     if (this.manual >= 1) {
+      if (this.paper && !this.behindDone) return
       // hero scroll is spent — every flick (either direction) feeds the tunnel speed
       // AND charges the wormhole; decays fast, so the RATE of flicking sets both.
       this.tunnelScroll = Math.min(6, this.tunnelScroll + Math.abs(e.deltaY) * 0.0016)
@@ -2674,10 +2943,12 @@ export class ShaderHero {
 
   private onKey = (e: KeyboardEvent): void => {
     if (this.locked || this.inWormhole) return
+    if (this.paperOn && !this.behindDone) return
     const step: Record<string, number> = { ArrowDown: 0.07, PageDown: 0.22, ' ': 0.22, ArrowUp: -0.07, PageUp: -0.22 }
     const s = step[e.key]
     if (s === undefined) return
     if (this.manual >= 1) {
+      if (this.paper && !this.behindDone) return
       this.tunnelScroll = Math.min(6, this.tunnelScroll + Math.abs(s) * 3)
       if (!this.textsDone) this.advanceTexts(s * 900)
       else this.notePulse()

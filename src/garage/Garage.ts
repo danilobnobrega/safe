@@ -136,10 +136,12 @@ export class Garage {
 
     window.addEventListener('resize', this.onResize)
     // the hero's white flash (it jumps here at the wormhole's white peak), carried over: covers
-    // the load, then lifts as the entrance starts
+    // the load, then lifts as the entrance starts. (?from=bin, /hero-paper*: it comes out of the
+    // dark at the bottom of the waste bin instead — the same, in black)
+    const fromBin = new URLSearchParams(location.search).get('from') === 'bin'
     const white = document.createElement('div')
     white.id = 'arrive-white'
-    white.setAttribute('style', 'position:fixed;inset:0;background:#fff;z-index:10;pointer-events:none;transition:opacity .6s ease-out')
+    white.setAttribute('style', `position:fixed;inset:0;background:${fromBin ? '#000' : '#fff'};z-index:10;pointer-events:none;transition:opacity ${fromBin ? '1.1s ease-in' : '.6s ease-out'}`)
     document.body.appendChild(white)
     void this.load()
   }
