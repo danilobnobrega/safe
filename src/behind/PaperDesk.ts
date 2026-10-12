@@ -66,6 +66,7 @@ const PRINTER_SCALE = num('ps', 1.5)
 const PRINT_SLOT_Y = Number(new URLSearchParams(location.search).get('sloty') ?? 0.032) // (above the output tray's front lip — at 0.02 the lip drew across the sheet) // the model is a small inkjet: at this size an A4 comes out landscape
 const PRINTER_AT = { x: num('px', 0.1), z: num('pz', -0.27), yaw: num('pyaw', 0.12) }
 const LAMP_AT = { x: num('lx', 1.0), z: num('lz', 0.25), yaw: num('ly', 0.1) } // clamped to the desk's right edge, the arm out over the floor, the shade over the desk
+const PRINT_LAG = 0.3 // s: the paper path, from going in at the back to showing at the front
 const PRINT_SIZE = { along: 1.2, across: 1.08 } // the printed pages vs the hero's sheet
 const DRAFT_TURN = Number(new URLSearchParams(location.search).get('turn') ?? 1) // (which quarter-turn reads upright)
 const PRINT_WAIT = 0.35 // s: the printer taking the sheet in
@@ -131,6 +132,15 @@ export class PaperDesk {
   private printing?: { s: Sheet; t: number }
   private printerFwd = new THREE.Vector3()
   private printerSlot = new THREE.Vector3()
+  /** the printer as the balls meet it: its box (and output tray), in world space */
+  /** the one path a printed sheet travels, in world space, sampled densely: lying on the stack up the
+   *  back tray, down into the printer, round the roller (a curve), out of the front slot and flat over
+   *  the output tray. `cum` the arc length at each point; sHead where the head prints, sSlot the slot */
+  private paperPath?: { pts: THREE.Vector3[]; cum: number[]; sHead: number; sSlot: number; across: THREE.Vector3; len: number; wid: number }
+  private ribbon?: THREE.Mesh
+  private printerSolids: { centre: THREE.Vector3; half: THREE.Vector3; quat: THREE.Quaternion }[] = []
+  // the paper path's way in: the stack on the back tray, and the sheet being drawn in
+  private feedIn?: { sheet: THREE.Mesh; bottom: THREE.Vector3; down: THREE.Vector3; up: THREE.Vector3; len: number }
   private key?: THREE.DirectionalLight
   private lampHead?: THREE.Object3D
   private lampSwing?: () => number
@@ -276,10 +286,15 @@ export class PaperDesk {
     this.addChalk(pens)
     const bin = this.makeBin()
     this.addChalk(bin)
+    // TEST (?label=…): the About us label, a few ways — tape (paper taped on), chalk (written on the
+    // bin in chalk), stencil (sprayed round it), postit (a sticky note slapped on)
+    const lab = Q.get('label') ?? 'postit' // (Danilo's pick)
+    bin.add(lab === 'tape' ? this.makeLabel() : this.makeBinWriting(lab))
     const printer = this.buildPrinter(printerSrc)
     this.binR = binReactor(bin)
     const lamp = this.buildLamp(lampSrc)
-    this.reactors = [deskReactor(desk), pensReactor(pens), this.binR, printer, lamp, ...(PROPS === 'mix' ? await this.buildMixProps(loader) : [])]
+    void printer // (its hover off — Danilo didn't like the hum either; to be agreed)
+    this.reactors = [deskReactor(desk), pensReactor(pens), this.binR, lamp, ...(PROPS === 'mix' ? await this.buildMixProps(loader) : [])]
     // the floor: the same chalk, fading out a few metres away (far off, at a grazing angle, its
     // hatching piled up into a pale band along the horizon)
     const floorMat = this.chalkMat.clone()
@@ -323,6 +338,23 @@ export class PaperDesk {
     const cavity = byName('Cube_1') ?? body
     const button = parts[parts.length - 1]
     pr.scale.setScalar(PRINTER_SCALE)
+    // the model's cavity piece also has a small block up top, coplanar with the lid: in the outline pass
+    // the two flickered into four specks on the lid (Danilo) — that block's faces are dropped
+    {
+      const cav = pr.children.find((c) => c.name === 'Cube_1') as THREE.Mesh | undefined
+      if (cav) {
+        const g = cav.geometry.index ? cav.geometry : cav.geometry
+        const pos = g.attributes.position
+        const ry = (cav.userData.rest as THREE.Vector3).y
+        const src = g.index ? Array.from(g.index.array) : Array.from({ length: pos.count }, (_, i) => i)
+        const keep: number[] = []
+        for (let i = 0; i < src.length; i += 3) {
+          const top = [0, 1, 2].every((k) => pos.getY(src[i + k]) + ry > 0.03)
+          if (!top) keep.push(src[i], src[i + 1], src[i + 2])
+        }
+        g.setIndex(keep)
+      }
+    }
     const bb = new THREE.Box3().setFromObject(pr)
     pr.position.set(PRINTER_AT.x, this.deskTop - bb.min.y, PRINTER_AT.z)
     pr.rotation.y = PRINTER_AT.yaw
@@ -342,14 +374,58 @@ export class PaperDesk {
       // the call: a small orange dot floating just over the printer, pulsing (shown from the first miss)
       const fb = new THREE.Box3().setFromObject(pr)
       const c = fb.getCenter(new THREE.Vector3())
-      const dot = new THREE.Mesh(new THREE.CircleGeometry(0.018, 32), new THREE.MeshBasicMaterial({ color: 0xff9a4d, transparent: true, opacity: 0, depthTest: false, depthWrite: false }))
-      dot.position.set(c.x, fb.max.y + 0.09, c.z)
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(0.008, 24), new THREE.MeshBasicMaterial({ color: 0xff9a4d, transparent: true, opacity: 0, depthTest: false, depthWrite: false }))
+      dot.position.set(c.x, fb.max.y + 0.035, c.z)
       dot.renderOrder = 10
       dot.visible = false
       this.scene.add(dot)
       this.printerCall = dot
     }
     this.printer = pr
+    {
+      // the model's own measures (its space): body x ±0.15, y -0.06..0.06, z -0.075..0.075; output
+      // tray z 0.075..0.181 at y ≈ -0.03; back (input) tray from (y 0.036, z -0.075) up to
+      // (y 0.121, z -0.137), 0.18 wide
+      const S = PRINTER_SCALE
+      const q = pr.quaternion.clone()
+      const solid = (cx: number, cy: number, cz: number, hx: number, hy: number, hz: number) =>
+        this.printerSolids.push({ centre: pr.localToWorld(new THREE.Vector3(cx, cy, cz)), half: new THREE.Vector3(hx * S, hy * S, hz * S), quat: q })
+      solid(0, 0, 0, 0.15, 0.06, 0.075)
+      solid(0, -0.03, 0.128, 0.09, 0.012, 0.053)
+      // the paper stack on the back tray, and the sheet that goes in
+      const bottomL = new THREE.Vector3(0, 0.036, -0.075)
+      const topL = new THREE.Vector3(0, 0.121, -0.137)
+      const bottom = pr.localToWorld(bottomL.clone())
+      const top = pr.localToWorld(topL.clone())
+      const up = top.clone().sub(bottom).normalize() // along the tray, upward
+      const across = new THREE.Vector3(1, 0, 0).applyQuaternion(q)
+      const out = new THREE.Vector3().crossVectors(across, up).normalize() // off the tray's face
+      if (out.dot(new THREE.Vector3(0, 0, 1).applyQuaternion(q)) < 0) out.negate()
+      const len = SHEET_W * PRINT_SIZE.along
+      const wid = SHEET_H * PRINT_SIZE.across
+      const blank = new THREE.MeshStandardMaterial({ color: 0xefede6, roughness: 0.92, emissive: new THREE.Color(0xefede6), emissiveIntensity: PAPER_GLOW, side: THREE.DoubleSide })
+      const basis = new THREE.Matrix4().makeBasis(across, up, out)
+      // (the stack a shade under the top sheet, so the sheet reads as it's drawn off it)
+      const stackMat = blank.clone()
+      stackMat.color.set(0xc9c5b9)
+      stackMat.emissive.set(0xc9c5b9)
+      const stack = new THREE.Mesh(new THREE.BoxGeometry(wid, len, 0.008), stackMat)
+      stack.quaternion.setFromRotationMatrix(basis)
+      stack.position.copy(bottom).addScaledVector(up, len / 2 - 0.012).addScaledVector(out, 0.0045)
+      this.scene.add(stack)
+      // (a shade whiter than the stack, so its edge reads as it slides down over it)
+      const loose = blank.clone()
+      loose.color.set(0xfbf9f3)
+      loose.emissive.set(0xfbf9f3)
+      loose.emissiveIntensity = PAPER_GLOW * 1.8
+      const sheet = new THREE.Mesh(new THREE.PlaneGeometry(wid, len), loose)
+      sheet.quaternion.copy(stack.quaternion)
+      sheet.visible = false
+      this.scene.add(sheet)
+      ;(sheet.material as THREE.MeshStandardMaterial).clippingPlanes = [new THREE.Plane().setFromNormalAndCoplanarPoint(up, bottom)]
+      this.feedIn = { sheet, bottom: bottom.addScaledVector(out, 0.0095), down: up.clone().negate(), up, len }
+      this.buildPaperPath(across)
+    }
     if (location.search.includes('aimlog')) console.info('[paper] printer', JSON.stringify({ parts: parts.map((m) => [m.name, (m.userData.rest as THREE.Vector3).toArray().map((v) => +v.toFixed(3)), m.geometry.boundingBox!.getSize(new THREE.Vector3()).toArray().map((v) => +v.toFixed(3))]), slot: this.printerSlot.toArray().map((v) => +v.toFixed(3)), fwd: this.printerFwd.toArray().map((v) => +v.toFixed(2)), body: new THREE.Box3().setFromObject(body).max.toArray().map((v) => +v.toFixed(3)) }))
     void lid
     return printerReactor(pr, this.printerLight)
@@ -524,6 +600,67 @@ export class PaperDesk {
   }
 
   /** the next draft, out of the printer: fed out of its slot, then laid on the desk */
+  private buildPaperPath(across: THREE.Vector3): void {
+    const fi = this.feedIn!
+    const len = fi.len
+    const E = fi.bottom.clone() // where the tray meets the body (the sheet goes in here)
+    const T = E.clone().addScaledVector(fi.up, len) // the stack's top: a sheet lying on it ends here
+    const S = this.printerSlot.clone() // the front slot
+    const fwd = this.printerFwd.clone()
+    const Q = S.clone().addScaledVector(fwd, -0.035) // under the head, just inside the slot
+    // round the roller: a cubic from E (heading down the tray) to Q (heading out the front)
+    const c1 = E.clone().addScaledVector(fi.down, 0.06)
+    const c2 = Q.clone().addScaledVector(fwd, -0.07)
+    const pts: THREE.Vector3[] = [T]
+    for (let i = 0; i <= 32; i++) {
+      const t = i / 32
+      const a = (1 - t) ** 3, b = 3 * (1 - t) ** 2 * t, c = 3 * (1 - t) * t * t, d = t ** 3
+      pts.push(new THREE.Vector3().addScaledVector(E, a).addScaledVector(c1, b).addScaledVector(c2, c).addScaledVector(Q, d))
+    }
+    pts.push(S, S.clone().addScaledVector(fwd, len + 0.1))
+    const cum = [0]
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]))
+    const sQ = cum[pts.length - 3]
+    const sS = cum[pts.length - 2]
+    this.paperPath = { pts, cum, sHead: sQ - 0.01, sSlot: sS, across: across.clone(), len, wid: SHEET_H * PRINT_SIZE.across }
+  }
+
+  /** a point on the paper path at arc length `s` (clamped to its ends) */
+  private pathAt(s: number, out: THREE.Vector3): THREE.Vector3 {
+    const { pts, cum } = this.paperPath!
+    if (s <= 0) return out.copy(pts[0])
+    for (let i = 1; i < pts.length; i++) {
+      if (cum[i] >= s) return out.lerpVectors(pts[i - 1], pts[i], (s - cum[i - 1]) / Math.max(1e-9, cum[i] - cum[i - 1]))
+    }
+    return out.copy(pts[pts.length - 1])
+  }
+
+  /** the sheet in the printer: a strip bent along the path — its leading edge `sLead` along it.
+   *  Blank until it has passed the head, the page's print after */
+  private placeRibbon(sLead: number): void {
+    const P = this.paperPath!
+    const rib = this.ribbon!
+    const pos = rib.geometry.attributes.position as THREE.BufferAttribute
+    const uv = rib.geometry.attributes.uv as THREE.BufferAttribute
+    const rows = pos.count / 2 - 1
+    const c = new THREE.Vector3()
+    const half = P.across.clone().multiplyScalar(P.wid / 2)
+    for (let i = 0; i <= rows; i++) {
+      const a = (i / rows) * P.len // from the leading edge back
+      const sp = sLead - a
+      this.pathAt(sp, c)
+      pos.setXYZ(i * 2, c.x - half.x, c.y - half.y, c.z - half.z)
+      pos.setXYZ(i * 2 + 1, c.x + half.x, c.y + half.y, c.z + half.z)
+      // (the printed page's own uv — leading edge u 0, the -across side v 1; a blank corner before the head)
+      const printed = sp > P.sHead
+      uv.setXY(i * 2, printed ? a / P.len : 0.015, printed ? 1 : 0.015)
+      uv.setXY(i * 2 + 1, printed ? a / P.len : 0.015, printed ? 0 : 0.015)
+    }
+    pos.needsUpdate = true
+    uv.needsUpdate = true
+    rib.geometry.computeBoundingSphere()
+  }
+
   private startPrint(): void {
     this.draft++
     const s = this.addSheet(this.draftTexture(this.draft))
@@ -534,11 +671,31 @@ export class PaperDesk {
     const m = s.mesh.material as THREE.MeshStandardMaterial
     m.emissiveIntensity = PAPER_GLOW
     m.color.setScalar(1)
-    this.renderer.localClippingEnabled = true
-    const slotPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(this.printerFwd.clone().negate(), this.printerSlot.clone().addScaledVector(this.printerFwd, -0.002))
-    m.clippingPlanes = [slotPlane.negate()]
+    s.mesh.visible = false
+    if (this.paperPath) {
+      const rows = 80
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array((rows + 1) * 2 * 3), 3))
+      g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array((rows + 1) * 2 * 2), 2))
+      // faces up once it lies flat out front (rows run back from the leading edge, -fwd)
+      const up = new THREE.Vector3().crossVectors(this.printerFwd.clone().negate(), this.paperPath.across).y > 0
+      const idx: number[] = []
+      for (let i = 0; i < rows; i++) {
+        const a = i * 2, b = a + 1, c = a + 2, d = a + 3
+        if (up) idx.push(a, c, b, b, c, d)
+        else idx.push(a, b, c, b, d, c)
+      }
+      g.setIndex(idx)
+      this.ribbon?.removeFromParent()
+      const rm = this.paperMaterial((m as THREE.MeshStandardMaterial).map!)
+      rm.emissiveIntensity = PAPER_GLOW
+      rm.color.setScalar(1)
+      this.ribbon = new THREE.Mesh(g, rm)
+      this.ribbon.frustumCulled = false
+      this.scene.add(this.ribbon)
+    }
     this.printing = { s, t: 0 }
-    this.printerSound.play(PRINT_WAIT, PRINT_FEED)
+    this.printerSound.play(PRINT_WAIT + PRINT_LAG, PRINT_FEED)
     this.stepPrint(0)
   }
 
@@ -547,22 +704,32 @@ export class PaperDesk {
     if (!pr) return
     pr.t += dt
     const m = pr.s.mesh
-    // a printer's feed: a short wait while it pulls the sheet in, then out at an even pace, its
-    // rollers giving it a faint tremble — and it stays on the output tray, taken from there
-    const k = THREE.MathUtils.clamp((pr.t - PRINT_WAIT) / PRINT_FEED, 0, 1)
-    const fed = k * k * (3 - 2 * k) * 0.15 + k * 0.85
-    const tremble = k > 0 && k < 1 ? Math.sin(pr.t * 90) * 0.0004 : 0
+    const P = this.paperPath
+    // one sheet, all the way through: a short pull as the printer takes it off the stack, then an
+    // even feed — down the tray, round the roller, past the head (where the print appears), out
+    const pull = THREE.MathUtils.clamp(pr.t / PRINT_WAIT, 0, 1)
+    const through = THREE.MathUtils.clamp((pr.t - PRINT_WAIT) / (PRINT_LAG + PRINT_FEED), 0, 1)
+    const done = through >= 1
+    if (P && this.ribbon) {
+      const pullLen = 0.03
+      const sLead = P.len + pull * pullLen + through * (P.sSlot - pullLen)
+      this.ribbon.visible = !done
+      if (!done) this.placeRibbon(sLead)
+    }
+    if (this.feedIn) this.feedIn.sheet.visible = false
+    if (!done) return
+    // out: the page lies on the output tray — the crumple-able sheet takes the strip's place exactly
     const yaw = this.printerYaw()
     const mid = this.flatCentre.clone().multiply(m.scale).setY(0).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
-    m.position.copy(this.printerSlot).addScaledVector(this.printerFwd, (fed - 0.5) * SHEET_W * m.scale.x + tremble).sub(mid)
+    m.position.copy(this.printerSlot).addScaledVector(this.printerFwd, 0.5 * SHEET_W * m.scale.x).sub(mid)
     m.rotation.y = yaw
-    if (k >= 1) {
-      ;(m.material as THREE.MeshStandardMaterial).clippingPlanes = null
-      ;(m.userData.home as THREE.Vector3).copy(m.position)
-      m.userData.homeYaw = yaw
-      this.active = pr.s
-      this.printing = undefined
-    }
+    m.visible = true
+    this.ribbon?.removeFromParent()
+    this.ribbon = undefined
+    ;(m.userData.home as THREE.Vector3).copy(m.position)
+    m.userData.homeYaw = yaw
+    this.active = pr.s
+    this.printing = undefined
   }
 
   private addChalk(o: THREE.Object3D): void {
@@ -574,6 +741,124 @@ export class PaperDesk {
   }
 
   /** an office waste bin: a tapered metal cylinder, open at the top, with a rolled rim */
+  /** "ABOUT US" — a paper label taped on the bin, a bit crooked, facing the desk's camera (the bin is
+   *  the way to the next page, the about page — Danilo's idea). Real paper, like the sheets; a child
+   *  of the bin, so it goes with it when the bin is knocked */
+  private makeLabel(): THREE.Object3D {
+    const cv = document.createElement('canvas')
+    cv.width = 512
+    cv.height = 200
+    const g = cv.getContext('2d')!
+    g.fillStyle = '#efede6'
+    g.fillRect(0, 0, cv.width, cv.height)
+    g.fillStyle = '#121212'
+    g.font = '500 84px "IBM Plex Mono", monospace'
+    g.textAlign = 'center'
+    g.textBaseline = 'middle'
+    g.fillText('ABOUT US', cv.width / 2, cv.height / 2 + 4)
+    const map = new THREE.CanvasTexture(cv)
+    map.colorSpace = THREE.SRGBColorSpace
+    map.anisotropy = 8
+    const paper = new THREE.MeshStandardMaterial({ map, emissiveMap: map, emissive: new THREE.Color(1, 1, 1), emissiveIntensity: PAPER_GLOW + 0.15, roughness: 0.9 })
+    const W = 0.12, H = W * (cv.height / cv.width)
+    const label = new THREE.Group()
+    const sheet = new THREE.Mesh(new THREE.PlaneGeometry(W, H), paper)
+    label.add(sheet)
+    // two strips of tape over its ends
+    const tape = new THREE.MeshStandardMaterial({ color: 0xf3eedc, transparent: true, opacity: 0.55, roughness: 0.4, emissive: new THREE.Color(0xf3eedc), emissiveIntensity: 0.08 })
+    for (const sx of [-1, 1]) {
+      const t = new THREE.Mesh(new THREE.PlaneGeometry(0.018, H * 1.35), tape)
+      t.position.set((sx * W) / 2, 0, 0.0006)
+      t.rotation.z = sx * 0.12
+      label.add(t)
+    }
+    // on the bin's side that faces the camera's resting place, at two thirds of its height, leaning
+    // with the bin's wall
+    const toCam = new THREE.Vector3(this.finalPose.pos.x - BIN.x, 0, this.finalPose.pos.z - BIN.z).normalize()
+    const y = BIN.h * 0.6
+    const r = BIN.rBottom + (BIN.rTop - BIN.rBottom) * (y / BIN.h) + 0.0025
+    label.position.copy(toCam).multiplyScalar(r).setY(y)
+    label.lookAt(label.position.clone().add(toCam))
+    label.rotateX(-Math.atan2(BIN.rTop - BIN.rBottom, BIN.h))
+    label.rotateZ(0.06) // taped on by hand
+    return label
+  }
+
+  /** the label as a band wrapped on the bin's own (tapered) wall, or a sticky note */
+  private makeBinWriting(kind: string): THREE.Object3D {
+    const toCam = Math.atan2(this.finalPose.pos.x - BIN.x, this.finalPose.pos.z - BIN.z)
+    const cv = document.createElement('canvas')
+    cv.width = 1024
+    cv.height = 256
+    const g = cv.getContext('2d')!
+    g.clearRect(0, 0, cv.width, cv.height)
+    g.textAlign = 'center'
+    g.textBaseline = 'middle'
+    if (kind === 'postit') {
+      const n = document.createElement('canvas')
+      n.width = n.height = 1024
+      const h = n.getContext('2d')!
+      h.scale(4, 4)
+      h.fillStyle = '#f7e36b'
+      h.fillRect(0, 0, 256, 256)
+      h.fillStyle = 'rgba(0,0,0,0.06)'
+      h.fillRect(0, 0, 256, 34)
+      h.fillStyle = '#1a1a1a'
+      h.font = 'italic 700 74px "Tinos", serif'
+      h.textAlign = 'center'
+      h.fillText('about', 128, 122)
+      h.fillText('us', 128, 196)
+      const map = new THREE.CanvasTexture(n)
+      map.colorSpace = THREE.SRGBColorSpace
+      map.anisotropy = 16
+      const note = new THREE.Mesh(new THREE.PlaneGeometry(0.095, 0.095), new THREE.MeshStandardMaterial({ map, emissiveMap: map, emissive: new THREE.Color(1, 1, 1), emissiveIntensity: 0.28, roughness: 0.9, side: THREE.DoubleSide }))
+      const y = BIN.h * 0.62
+      const r = BIN.rBottom + (BIN.rTop - BIN.rBottom) * (y / BIN.h) + 0.012 // (clear of the curved wall: it's flat)
+      const dir = new THREE.Vector3(Math.sin(toCam + 0.1), 0, Math.cos(toCam + 0.1))
+      note.position.copy(dir).multiplyScalar(r).setY(y)
+      note.lookAt(note.position.clone().add(dir))
+      note.rotateX(-Math.atan2(BIN.rTop - BIN.rBottom, BIN.h))
+      note.rotateZ(-0.14)
+      return note
+    }
+    if (kind === 'stencil') {
+      g.fillStyle = '#ff9a4d'
+      g.font = '700 150px "IBM Plex Mono", monospace'
+      g.fillText('ABOUT US', cv.width / 2, cv.height / 2)
+      // the stencil's bridges: thin gaps across every letter
+      g.globalCompositeOperation = 'destination-out'
+      g.fillRect(0, cv.height / 2 - 5, cv.width, 10)
+      g.globalCompositeOperation = 'source-over'
+    } else {
+      // chalk, by hand: a bit uneven, the stroke skipping on the metal
+      g.fillStyle = '#efeee6'
+      g.font = 'italic 500 140px "Tinos", serif'
+      g.save()
+      g.translate(cv.width / 2, cv.height / 2)
+      g.rotate(-0.04)
+      g.fillText('about us', 0, 0)
+      g.restore()
+      g.globalCompositeOperation = 'destination-out'
+      for (let i = 0; i < 9000; i++) {
+        g.fillStyle = `rgba(0,0,0,${0.25 + Math.random() * 0.6})`
+        g.fillRect(Math.random() * cv.width, Math.random() * cv.height, 1 + Math.random() * 3, 1)
+      }
+      g.globalCompositeOperation = 'source-over'
+    }
+    const map = new THREE.CanvasTexture(cv)
+    map.colorSpace = THREE.SRGBColorSpace
+    map.anisotropy = 8
+    const arc = 1.5 // radians of the wall it spans
+    const y0 = BIN.h * 0.42, y1 = BIN.h * 0.74
+    const r0 = BIN.rBottom + (BIN.rTop - BIN.rBottom) * (y0 / BIN.h) + 0.0015
+    const r1 = BIN.rBottom + (BIN.rTop - BIN.rBottom) * (y1 / BIN.h) + 0.0015
+    // three's cylinder starts its theta at +z and goes counter-clockwise from above; centred on the camera side
+    const geo = new THREE.CylinderGeometry(r1, r0, y1 - y0, 48, 1, true, toCam - arc / 2, arc)
+    const band = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map, transparent: true, depthWrite: false, side: THREE.FrontSide }))
+    band.position.y = (y0 + y1) / 2
+    return band
+  }
+
   private makeBin(): THREE.Object3D {
     const { rBottom, rTop, h } = BIN
     const t = 0.004
@@ -683,6 +968,10 @@ export class PaperDesk {
     // the desk: its top, and a block under it (it's a cabinet desk)
     fixed(RAPIER.ColliderDesc.cuboid(1.0, 0.02, 0.475).setTranslation(0, this.deskTop - 0.02, 0))
     fixed(RAPIER.ColliderDesc.cuboid(0.98, this.deskTop / 2 - 0.02, 0.45).setTranslation(0, this.deskTop / 2 - 0.02, 0))
+    // the printer: solid (the balls went straight through it)
+    for (const b of this.printerSolids) {
+      fixed(RAPIER.ColliderDesc.cuboid(b.half.x, b.half.y, b.half.z).setTranslation(b.centre.x, b.centre.y, b.centre.z).setRotation({ x: b.quat.x, y: b.quat.y, z: b.quat.z, w: b.quat.w }))
+    }
     // the bin: a floor and a ring of wall slabs
     fixed(RAPIER.ColliderDesc.cylinder(0.01, BIN.rBottom).setTranslation(BIN.x, 0.0, BIN.z))
     const segs = 20

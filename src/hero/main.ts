@@ -22,6 +22,10 @@ const hero = new ShaderHero(canvas, {
   wormPrefetch: ['garage.glb', 'photos.jpg', 'drawing.png', 'noise.png', 'concrete.png'].map((f) => `${base}garage/${f}`),
   chalkEdge: true,
   drawn: true,
+  // behind the cubes, the desk (src/behind/PaperDesk.ts): the hero was a sheet of paper — crumple it,
+  // bank it into the bin ("about us"), and down into the garage. Made the main page 2026-10-12; the
+  // tunnel version is /hero-tunnel-main.html
+  behind: 'paper',
 })
 mountCookieBanner(hero.crumbs, () => hero.unlock())
 mountMenu({ drawn: true, drawnToasts: 'hover', realisticToast: true })
