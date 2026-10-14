@@ -36,6 +36,7 @@ export default defineConfig({
         heroPaperV4: 'hero-paper-v4.html',
         behindModels: 'behind-models.html',
         printerSounds: 'printer-sounds.html',
+        cookieSounds: 'cookie-sounds.html',
         heroTunnelReal: 'hero-tunnel-real.html',
         heroTunnelCompare: 'hero-tunnel-compare.html',
         heroTunnelBall50: 'hero-tunnel-ball50.html',

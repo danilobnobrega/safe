@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="UTF-8" />
+    <title>GENERIC — cookie sounds</title>
+    <style>
+      html, body { margin: 0; background: #121212; color: #efede6; font: 14px/1.5 "IBM Plex Mono", monospace; }
+      #app { max-width: 1000px; margin: 30px auto; padding: 0 16px; }
+      .top { position: sticky; top: 0; background: #121212; padding: 12px 0 14px; border-bottom: 1px solid #333; z-index: 2; }
+      .top a { color: #ff9a4d; }
+      h2 { font-weight: 500; font-size: 15px; color: #ff9a4d; margin: 34px 0 10px; }
+      .row { display: grid; grid-template-columns: 250px 1fr 170px 170px; gap: 8px; align-items: center; margin: 5px 0; }
+      .takes { display: flex; gap: 4px; }
+      button { background: #2a2a28; color: #efede6; border: 0; padding: 8px 10px; font: inherit; cursor: pointer; }
+      .takes button { background: #efede6; color: #121212; min-width: 46px; }
+      button:hover { outline: 1px solid #ff9a4d; }
+      button.choose.on { background: #ff9a4d; color: #121212; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/ui/cookieSounds.ts"></script>
+  </body>
+</html>

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import RAPIER from '@dimforge/rapier3d-compat'
+import { CrumbSound } from './CrumbSound'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { normalizeModel } from '../models/normalize'
 
@@ -9,6 +10,11 @@ export type CrumbKind = 'cookie' | 'cracker'
 export const CRUMB_VIEW_H = 6
 
 const GRAVITY = -160
+// (sound) the closing speed (stage units/s) a touch needs to be heard, and the one that's a full knock
+const LAND_MIN = 8
+const LAND_FULL = 70
+const PAIR_GAP = 220 // ms before the same two crumbs (or a crumb and the floor) are heard again
+const LAND_VOICES = 8 // most touches heard in one frame
 const TAU = Math.PI * 2
 const SLOTS = 10
 const POOL = 26
@@ -37,6 +43,12 @@ interface Item {
   dir?: number
   /** time of its last hop from the cursor: one hop, then it has to land (no juggling it up) */
   hopAt?: number
+  /** (sound) its velocity last frame: a sudden change is a hit */
+  pv?: { x: number; y: number; z: number }
+  /** (sound) when the cursor last shoved it */
+  pushAt?: number
+  /** (sound) its next landing will be heard (set when it's dropped in and when it's shoved) */
+  armed?: boolean
 }
 
 /**
@@ -60,6 +72,17 @@ export class CrumbRain {
   private loader = new GLTFLoader()
   private protos: Partial<Record<CrumbKind, Proto>> = {}
   private items: Item[] = []
+  // TEST (?crumbsound=…): the pile heard — off unless asked for
+  readonly sound = new CrumbSound()
+  // (?crumbdebug) every crumb that makes a sound flashes big for a beat, at that very moment
+  private debugFlash = new URLSearchParams(location.search).has('crumbdebug')
+  // (sound) the physics' own contacts: each new touch, the moment it happens
+  private events?: RAPIER.EventQueue // (made once Rapier is up)
+  private byCollider = new Map<number, Item>()
+  private preVel = new Map<Item, { x: number; y: number; z: number }>()
+  private pairAt = new Map<string, number>()
+  private heardPush: { it: Item; amount: number; dirY: number }[] = []
+  private kindNow: CrumbKind = 'cookie'
   private acc = 0
   private running = false
   private halfW = 1
@@ -113,6 +136,7 @@ export class CrumbRain {
     }
 
     const world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 })
+    this.events = new RAPIER.EventQueue(true)
     world.timestep = 1 / 120
     world.integrationParameters.numSolverIterations = 8
     world.integrationParameters.numInternalPgsIterations = 2
@@ -194,6 +218,18 @@ export class CrumbRain {
         } else nvy = v.y
       }
       it.body.setLinvel({ x: nvx, y: nvy, z: v.z }, true)
+      if (this.sound.on && now - (it.pushAt ?? -1e9) > 120) {
+        // every crumb the cursor hits is heard — each by what the hit really did to it: the velocity it
+        // was given (a glancing touch, a full launch), which way it went, where it is. What it then
+        // hits as it flies (other crumbs, the floor) the physics reports and land() plays
+        const dvx = nvx - v.x
+        const dvy = nvy - v.y
+        const dv = Math.hypot(dvx, dvy)
+        if (this.debugFlash) this.flash(it)
+        this.heardPush.push({ it, amount: Math.min(1, dv / PUSH_MAX), dirY: dv > 0 ? dvy / dv : 0 })
+        it.armed = true
+      }
+      it.pushAt = now
       const spin = 16 + k * 0.3 // and it tumbles
       it.body.setAngvel({ x: (Math.random() - 0.5) * spin, y: (Math.random() - 0.5) * spin, z: -(nvx - v.x) * 0.3 }, true)
     }
@@ -271,6 +307,8 @@ export class CrumbRain {
     const proto = await this.proto(kind)
     if (!this.world) return
     this.running = true
+    this.kindNow = kind
+    if (this.sound.kind === 'foley') this.sound.preloadFoley()
 
     const total = Math.min(count, POOL)
     const burst = Math.min(5, total)
@@ -296,6 +334,7 @@ export class CrumbRain {
   setSuction(on: boolean): void {
     if (!on || this.sucking || !this.running) return // nothing to suck until a pile exists
     this.sucking = true
+    this.sound.suck()
     if (this.spawnIv) window.clearInterval(this.spawnIv)
     if (this.world && this.floorC) this.world.removeCollider(this.floorC, false)
     // the box opens: the suck is the only way out
@@ -337,9 +376,10 @@ export class CrumbRain {
         .setAngularDamping(0.5)
         .setCcdEnabled(true),
     )
-    world.createCollider(proto.shape, body)
+    const col = world.createCollider(proto.shape.setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS), body)
 
-    this.items.push({ mesh, body })
+    this.items.push({ mesh, body, armed: true })
+    this.byCollider.set(col.handle, this.items[this.items.length - 1])
   }
 
   /** advance the physics; positions are in `stage`-local units */
@@ -365,8 +405,32 @@ export class CrumbRain {
     }
     if (this.push && to && from) this.shove(from, to, dt)
     let steps = 0
+    const hear = this.sound.on && !this.sucking && !!this.events
+    const heard: { it: Item; other?: Item; speed: number }[] = []
     while (this.acc >= world.timestep && steps < 3) {
-      world.step()
+      if (hear) for (const it of this.items) this.preVel.set(it, it.body.linvel())
+      world.step(hear ? this.events : undefined)
+      const events = this.events
+      if (hear) {
+        events!.drainCollisionEvents((h1, h2, started) => {
+          if (!started) return
+          const a = this.byCollider.get(h1)
+          const b = this.byCollider.get(h2)
+          const it = a ?? b
+          if (!it) return
+          const other = a && b ? (it === a ? b : a) : undefined
+          // how hard: the two bodies' closing speed as they met (a wall / the floor stands still)
+          const va = this.preVel.get(it) ?? { x: 0, y: 0, z: 0 }
+          const vb = other ? (this.preVel.get(other) ?? { x: 0, y: 0, z: 0 }) : { x: 0, y: 0, z: 0 }
+          // a crumb sliding over another makes and breaks contact many times a second: that's one
+          // touch, not a burst — the same two are heard again only after a beat
+          const key = h1 < h2 ? `${h1}:${h2}` : `${h2}:${h1}`
+          const nowT = performance.now()
+          if (nowT - (this.pairAt.get(key) ?? -1e9) < PAIR_GAP) return
+          this.pairAt.set(key, nowT)
+          heard.push({ it, other, speed: Math.hypot(va.x - vb.x, va.y - vb.y, va.z - vb.z) })
+        })
+      }
       this.acc -= world.timestep
       steps += 1
     }
@@ -378,6 +442,36 @@ export class CrumbRain {
       it.mesh.position.set(t.x, t.y, t.z)
       it.mesh.quaternion.set(r.x, r.y, r.z, r.w)
     }
+    if (heard.length) {
+      // this frame's touches, hardest first: the few you'd hear; a touch too soft to see is silent
+      heard.sort((p, q) => q.speed - p.speed)
+      // (a crumb is heard landing once — after it's dropped, after it's shoved; its bounces and grazes are not)
+      const loud = heard.filter((h) => h.speed >= LAND_MIN && h.it.armed).slice(0, LAND_VOICES)
+      for (const h of loud) h.it.armed = false
+      // (many at once: each a little quieter, as a crowd of small sounds is, not one big one)
+      const mix = 1 / Math.sqrt(Math.max(1, loud.length))
+      for (const h of loud) {
+        const x = h.it.body.translation().x / Math.max(1e-3, this.halfW)
+        if (this.debugFlash) this.flash(h.it)
+        this.sound.land(this.kindNow, Math.min(1, (h.speed - LAND_MIN) / LAND_FULL) * mix, x)
+      }
+    }
+    // the cursor's hits this frame, the same way
+    if (this.heardPush.length) {
+      const mix = 1 / Math.sqrt(this.heardPush.length)
+      for (const p of this.heardPush) this.sound.push(this.kindNow, p.amount * mix, { speed: p.amount, dirY: p.dirY, x: p.it.body.translation().x / Math.max(1e-3, this.halfW) })
+      this.heardPush = []
+    }
+  }
+
+  private flash(it: Item): void {
+    const m = it.mesh
+    if (m.userData.flashT0 === undefined) m.userData.s0 = m.scale.x
+    m.userData.flashT0 = performance.now()
+    m.scale.setScalar((m.userData.s0 as number) * 1.6)
+    window.setTimeout(() => {
+      if (performance.now() - (m.userData.flashT0 as number) >= 110) m.scale.setScalar(m.userData.s0 as number)
+    }, 120)
   }
 
   /** drag every crumb toward its assigned edge, faster the further it's gone, then despawn it */
