@@ -129,6 +129,9 @@ export class Post {
         // it stays sharp (it still gets the vignette, the fringe and FXAA)
         tAnnot: { value: null as THREE.Texture | null },
         uAnnot: { value: 0 },
+        // (/garage-roles-column) the set's silhouette: the annotation layer is hidden where it is
+        tAnnotMask: { value: null as THREE.Texture | null },
+        uAnnotMask: { value: 0 },
         // GENERIC: darken + blur the scene under the scan readout (Scan) so its orange always reads
         uShade: { value: 0 },
         uShadeRect: { value: new THREE.Vector4(0, 0, 0, 0) }, // uv x0, y0, x1, y1
@@ -143,6 +146,8 @@ export class Post {
         uniform sampler2D tNoise;
         uniform sampler2D tAnnot;
         uniform float uAnnot;
+        uniform sampler2D tAnnotMask;
+        uniform float uAnnotMask;
         uniform float uAspect;
         uniform vec2 uTexel;
         uniform float DISTORTION_SAMPLES;
@@ -193,6 +198,7 @@ export class Post {
 
           if (uAnnot > 0.5) {
             vec4 an = texture2D(tAnnot, vUv);
+            if (uAnnotMask > 0.5) an.a *= 1.0 - texture2D(tAnnotMask, vUv).r;
             final = mix(final, an.rgb, an.a);
           }
           float vignette = pow(length(vUv * 2.0 - 1.0), VIGNETTE_POWER);

@@ -30,6 +30,7 @@ export default defineConfig({
         heroTunnelSecret: 'hero-tunnel-secret.html',
         heroTunnelSecretReveal: 'hero-tunnel-secret-reveal.html',
         heroPaper: 'hero-paper.html',
+        garageRolesColumn: 'garage-roles-column.html',
         heroTunnelMain: 'hero-tunnel-main.html',
         heroPaperV2: 'hero-paper-v2.html',
         heroPaperV3: 'hero-paper-v3.html',

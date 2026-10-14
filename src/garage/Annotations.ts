@@ -60,6 +60,10 @@ const T_END = 1.8
 const LOST = { out: [0.45, 1.05], hold: 1.75, wipe: [1.75, 2.35], sub: [2.35, 2.8], end: 2.8 }
 const FADE_OUT = 0.45 // s for a note to fade away when the scroll moves on
 
+// (scroll mode) each role's place: across, from his head (of the screen width), and the uneven
+// distances between them (of the screen height)
+const SCROLL_X = [-0.2, 0.17, 0.02, 0.24, -0.27, 0.09]
+const SCROLL_GAPS = [0.72, 0.9, 0.62, 1.0, 0.8]
 const ARROW_GAP = 80 // px between the arrow's tip and him
 const CHALK = '#efeee7'
 
@@ -106,7 +110,101 @@ export class Annotations {
     })
   }
 
+  /** TEST (/garage-roles-column.html): instead of one note at a time (written out, an arrow, faded),
+   *  the roles are a column of text that the scroll carries up the screen like a page — passing
+   *  BEHIND him (Garage masks the layer with the set's silhouette) */
+  scrollMode = false
+
+  /** (scroll mode) 'scattered' — each role at its own place, arrows drawn in and out (tried 2026-10-14, dropped);
+   *  'column' — the first version: one centred column, evenly spaced, no arrows (/garage-roles-column) */
+  scrollStyle: 'scattered' | 'column' = 'scattered'
+
+  private drawScroll(s: number, start: number, camera: THREE.Camera, spots: Record<Spot, THREE.Vector3>): void {
+    const W = window.innerWidth
+    const H = window.innerHeight
+    const dpr = Math.min(window.devicePixelRatio, 1.5)
+    if (this.cnv.width !== Math.round(W * dpr) || this.cnv.height !== Math.round(H * dpr)) {
+      this.cnv.width = Math.round(W * dpr)
+      this.cnv.height = Math.round(H * dpr)
+      this.tex.dispose()
+    }
+    const toScreen = (p: THREE.Vector3) => {
+      this.v.copy(p).project(camera)
+      return new THREE.Vector2((this.v.x * 0.5 + 0.5) * W, (-this.v.y * 0.5 + 0.5) * H)
+    }
+    const headPt = toScreen(spots.head)
+    // the page: a screen of scroll moves it a screen; each role sits at its own place on it — off
+    // the line, not a column (some cross him, some pass beside him), at uneven distances
+    const travel = (s - start) * H
+    const column = this.scrollStyle === 'column'
+    const c = this.ctx
+    c.setTransform(1, 0, 0, 1, 0, 0)
+    c.clearRect(0, 0, this.cnv.width, this.cnv.height)
+    c.setTransform(dpr, 0, 0, dpr, 0, 0)
+    c.fillStyle = CHALK
+    c.textBaseline = 'alphabetic'
+    let any = false
+    let along = 0
+    NOTES.forEach((n, i) => {
+      along += i === 0 ? 0 : (column ? NOTE_EVERY * 0.62 : SCROLL_GAPS[(i - 1) % SCROLL_GAPS.length]) * H
+      // where it is now: entering from the bottom and going up
+      const y = H * 1.08 + along - travel
+      if (y < -H * 0.2 || y > H * 1.2) return
+      any = true
+      const titlePx = TITLE_PX * 1.25
+      const subPx = SUB_PX * 1.2
+      c.font = `italic 400 ${titlePx}px TinosNote`
+      const tw = c.measureText(n.title).width
+      c.font = `italic 400 ${subPx}px TinosNote`
+      const sw = c.measureText(n.sub).width
+      const bw = Math.max(tw, sw)
+      const cx = column ? headPt.x : THREE.MathUtils.clamp(headPt.x + SCROLL_X[i % SCROLL_X.length] * W, SAFE_X * W + bw / 2, (1 - SAFE_X) * W - bw / 2)
+      c.globalAlpha = 1
+      c.textAlign = 'center'
+      c.font = `italic 400 ${titlePx}px TinosNote`
+      c.fillText(n.title, cx + this.j(1) * 0.4, y + this.j(2) * 0.4)
+      c.globalAlpha = 0.88
+      c.font = `italic 400 ${subPx}px TinosNote`
+      c.fillText(n.sub, cx + this.j(3) * 0.4, y + subPx * 2.2 + this.j(4) * 0.4)
+      c.textAlign = 'left'
+      // the arrow: drawn out as the role comes into the middle band of the screen, held there,
+      // wiped as it leaves — from the side of the text facing him
+      const k = 1 - Math.abs(y / H - 0.42) / 0.3 // 1 in the middle, 0 at the band's edges
+      const drawn = THREE.MathUtils.clamp(k * 1.6, 0, 1)
+      if (drawn <= 0 || column) return
+      const left = cx < headPt.x
+      const target = n.to ? toScreen(spots[n.to]) : headPt.clone().add(new THREE.Vector2(left ? -0.17 * W : 0.17 * W, 0.02 * H))
+      const tail = Math.abs(cx - headPt.x) < bw * 0.6
+        ? new THREE.Vector2(cx, y + (y < headPt.y ? subPx * 2.8 : -titlePx)) // above/below him: from under/over the text
+        : new THREE.Vector2(left ? cx + bw / 2 + 18 : cx - bw / 2 - 18, y - titlePx * 0.3)
+      const dir = target.clone().sub(tail)
+      const tip = target.clone().sub(dir.clone().multiplyScalar(ARROW_GAP / Math.max(dir.length(), 1)))
+      const path = this.path(n.stroke, tail, tip, i, target)
+      c.globalAlpha = 1
+      this.chalkLine(path, n.to ? drawn : drawn * 0.28)
+      if (n.to && drawn >= 1) {
+        const a = path[path.length - 1]
+        const u = target.clone().sub(a).normalize()
+        const nrm = new THREE.Vector2(-u.y, u.x)
+        const hl = 20
+        this.chalkLine([a.clone().addScaledVector(u, -hl).addScaledVector(nrm, hl * 0.55), a], 1)
+        this.chalkLine([a.clone().addScaledVector(u, -hl).addScaledVector(nrm, -hl * 0.55), a], 1)
+      }
+    })
+    this.visible = any && this.ready
+    this.tex.needsUpdate = true
+  }
+
   update(dt: number, s: number, start: number, camera: THREE.PerspectiveCamera, spots: Record<Spot, THREE.Vector3>): void {
+    if (this.scrollMode) {
+      this.seedT += dt
+      if (this.seedT > 0.125) {
+        this.seedT = 0
+        this.seed = Math.random() * 1000
+      }
+      this.drawScroll(s, start, camera, spots)
+      return
+    }
     // which note the scroll is on (-1 before the first, count after the last)
     const pos = (s - start) / NOTE_EVERY
     const want = pos < 0.06 ? -1 : Math.min(Math.floor(pos), NOTES.length)

@@ -23,6 +23,7 @@ const CAM_ARRIVE = 2.8 // the camera reaches its final pose
 const FADE_FROM = 0.45
 const FADE_TO = CAM_ARRIVE
 const FADE_EACH = 0.4 // each object's own fade
+const MASK_LAYER = 7 // the set's meshes only (him, chair, desk, screens) — not the room
 const NOTES_START = CAM_ARRIVE + 0.3 // then the annotations, one after another
 const TAIL = 0.8 // a little room after the last one
 // the way out (screens, from the end of the notes): a step back, round behind him to look over
@@ -91,6 +92,10 @@ export class Garage {
   // man at the desk, swinging round to face him, and as he comes to the centre everything else
   // empties out (FOCUS_OUT), as if the whole frame were focused on him
   private focusScroll: boolean
+  // TEST (/garage-roles-column.html): the roles scroll up like a page, behind him
+  private rolesScroll = false
+  private maskRT?: THREE.WebGLRenderTarget
+  private maskMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
   private focusHead = new THREE.Vector3()
   private focusPos = new THREE.Vector3()
   private focusLook = new THREE.Vector3() // what the camera ends up aimed at
@@ -111,8 +116,9 @@ export class Garage {
   private _fq = new THREE.Quaternion()
   private _flook = new THREE.Vector3()
 
-  constructor(canvas: HTMLCanvasElement, opts: { focusScroll?: boolean } = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: { focusScroll?: boolean; rolesScroll?: boolean; rolesColumn?: boolean } = {}) {
     this.focusScroll = !!opts.focusScroll
+    this.rolesScroll = !!opts.rolesScroll || !!opts.rolesColumn
     registerChunks()
     this.readSize()
     this.renderer = new THREE.WebGLRenderer({
@@ -272,6 +278,9 @@ export class Garage {
       if (!m.isMesh || m.layers.mask !== 1 << 2) return // the set only (not floor, not photos)
       const nm = nameOf(o)
       if (nm === 'employee' && !man) man = m
+      // (/garage-roles-column) the silhouette the roles pass behind: what stays on screen with him —
+      // him, his chair, his screens, keyboard, mouse (not the room's other things, which fade away)
+      if (nm) m.layers.enable(MASK_LAYER)
       const src = m.material as THREE.ShaderMaterial
       const u = { value: 0 }
       m.material = new THREE.ShaderMaterial({
@@ -322,6 +331,8 @@ export class Garage {
     sp.shoulderR.copy(this.focusHead).addScaledVector(side, -0.11).y -= 0.03
     sp.chest.copy(this.focusHead).addScaledVector(face, 0.08).y -= 0.06
     this.notes = new Annotations()
+    this.notes.scrollMode = this.rolesScroll
+    this.notes.scrollStyle = 'column'
     // the cards: card 1 on his monitor's glass
     this.cards = new Cards()
     if (monitor) {
@@ -461,6 +472,34 @@ export class Garage {
     u.tAnnot.value = this.notes.tex
     const f = window.scrollY / window.innerHeight - this.finStart
     u.uAnnot.value = this.notes.visible && f < FIN_BACK[0] ? 1 : 0 // gone once the way out starts
+    // (scroll mode) the set's silhouette — him, his chair, desk, screen — so the text goes behind it
+    u.uAnnotMask.value = 0
+    if (this.rolesScroll && u.uAnnot.value > 0 && this.room) {
+      const w = Math.round(this.size.width * 0.5)
+      const h = Math.round(this.size.height * 0.5)
+      if (!this.maskRT) this.maskRT = new THREE.WebGLRenderTarget(w, h)
+      if (this.maskRT.width !== w || this.maskRT.height !== h) this.maskRT.setSize(w, h)
+      const sc = this.room.sceneDefault
+      const mask = this.camera.layers.mask
+      const bg = sc.background
+      const over = sc.overrideMaterial
+      const clear = this.renderer.getClearColor(new THREE.Color())
+      const alpha = this.renderer.getClearAlpha()
+      this.camera.layers.set(MASK_LAYER)
+      sc.background = null
+      sc.overrideMaterial = this.maskMat
+      this.renderer.setClearColor(0x000000, 1)
+      this.renderer.setRenderTarget(this.maskRT)
+      this.renderer.clear()
+      this.renderer.render(sc, this.camera)
+      this.renderer.setRenderTarget(null)
+      this.renderer.setClearColor(clear, alpha)
+      sc.overrideMaterial = over
+      sc.background = bg
+      this.camera.layers.mask = mask
+      u.tAnnotMask.value = this.maskRT.texture
+      u.uAnnotMask.value = 1
+    }
   }
 
   private frame = (): void => {
