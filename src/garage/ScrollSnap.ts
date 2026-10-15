@@ -24,7 +24,7 @@ export class ScrollSnap {
   private pos = { y: 0 }
 
   /** from / to in screens of scroll */
-  constructor(private from: number, private to: number) {
+  constructor(private from: number, private to: number, private carryTime = CARRY_TIME) {
     window.addEventListener('wheel', this.onWheel, { passive: false })
     window.addEventListener('scroll', this.onScroll, { passive: true })
   }
@@ -94,7 +94,7 @@ export class ScrollSnap {
     gsap.killTweensOf(this.pos)
     gsap.to(this.pos, {
       y: target * H,
-      duration: arrive ? ARRIVE_TIME : Math.max(0.35, CARRY_TIME * left),
+      duration: arrive ? ARRIVE_TIME : Math.max(0.35, this.carryTime * left),
       // off at once, as if the nudge had flung it, settling as it lands
       ease: 'power2.out',
       onUpdate: () => window.scrollTo({ top: this.pos.y, behavior: 'instant' }),

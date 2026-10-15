@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>GENERIC — About us (flex card)</title>
+    <meta name="description" content="GENERIC headquarters. A garage." />
+    <style>
+      html, body { margin: 0; background: #121212; }
+      /* the room stays on screen; the page's scroll drives the camera inside it */
+      #garage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+      #scroll { height: 400vh; }
+    </style>
+  </head>
+  <body>
+    <canvas id="garage"></canvas>
+    <div id="scroll"></div>
+    <script type="module" src="/src/garage/mainFlex.ts"></script>
+  </body>
+</html>

@@ -4,6 +4,10 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
 import { DRAWN_GLSL, type Drawn } from '../hero/Drawn'
 import { PrinterSound } from './PrinterSound'
+import { LampCreak } from './LampCreak'
+import { PaperCrumple } from './PaperCrumple'
+import { PaperToss, TOSS_TEST } from './PaperToss'
+import { PaperThrow } from './PaperThrow'
 import { Spring, flatten, deskReactor, pensReactor, binReactor, printerReactor, lampReactor, clockReactor, booksReactor, plantReactor, type Reactor } from './DeskReactions'
 
 /**
@@ -129,6 +133,17 @@ export class PaperDesk {
   // on the desk round the printer pulses, and stays until a ball goes in
   private printerCall?: THREE.Mesh
   private printerSound = new PrinterSound()
+  private lampCreak = new LampCreak()
+  private crumpleSound = new PaperCrumple()
+  private tossSound = new PaperToss() // (parked: ?toss=on)
+  private throwSound = new PaperThrow()
+  private crumpleLast = { c: 0, x: 0 } // (the last sheet crumpled: for its after-ticks)
+  private lampSwingV?: () => number
+  private lampNod?: () => [number, number]
+  // (creak) the middle of the shade, in the shade's own frame — followed on screen each frame: what
+  // the eye sees move, both joints together
+  private lampShade?: THREE.Vector3
+  private lampWas?: THREE.Vector3 // (creak) the shade's middle a frame ago, in the world
   private printing?: { s: Sheet; t: number }
   private printerFwd = new THREE.Vector3()
   private printerSlot = new THREE.Vector3()
@@ -159,6 +174,7 @@ export class PaperDesk {
   private pointer = new THREE.Vector2(0.5, 0.5) // css px, last seen
   private down = false
   private dragPx = 0
+  private twistDir = new THREE.Vector2() // (crumple sound) the drag's recent way, to hear it turn back
   private holdPlane = new THREE.Plane()
   private holdTrail: { p: THREE.Vector3; t: number }[] = []
   private pxTrail: { x: number; y: number; t: number }[] = []
@@ -494,8 +510,12 @@ export class PaperDesk {
     lamp.rotation.y = LAMP_AT.yaw
     this.addChalk(lamp)
     this.lampHead = head
+    lamp.updateWorldMatrix(true, true)
+    this.lampShade = head.worldToLocal(new THREE.Box3().setFromObject(head).getCenter(new THREE.Vector3()))
     const r = lampReactor(lamp, swivel, head)
     this.lampSwing = r.swing
+    this.lampSwingV = r.swingV
+    this.lampNod = r.nod
     return r
   }
 
@@ -560,6 +580,28 @@ export class PaperDesk {
       }
     }
     for (const r of this.reactors) r.step(dt)
+    let seen: THREE.Vector2 | undefined
+    if (this.lampHead && this.lampShade && dt > 0) {
+      // the shade's velocity on screen, in screen-heights per second — the LAMP's own: where it is
+      // now and where it was a frame ago, both seen through this frame's camera, so the camera
+      // moving (the desk's zoom out) never reads as the lamp swinging
+      const at = this.lampHead.localToWorld(this.lampShade.clone())
+      const scr = (w: THREE.Vector3) => {
+        const p = w.clone().project(this.camera)
+        return new THREE.Vector2(p.x * this.camera.aspect * 0.5, p.y * 0.5)
+      }
+      if (this.lampWas) seen = scr(at).sub(scr(this.lampWas)).divideScalar(dt)
+      this.lampWas = at
+    }
+    if (this.lampSwing && this.lampSwingV) this.lampCreak.update(dt, this.lampSwing(), this.lampSwingV(), seen)
+    if (this.lampSwing && this.lampSwingV && this.lampNod && this.lampHead && Q.has('creakdebug')) {
+      // (creakdebug) a frame-by-frame log of the lamp and its sound, and where it is on screen
+      const w = window as unknown as { __creak?: number[][]; __lampAt?: number[] }
+      const [nx, nv] = this.lampNod()
+      ;(w.__creak ??= []).push([performance.now(), this.lampSwing(), this.lampSwingV(), nx, nv, this.lampCreak.level(), seen?.length() ?? 0])
+      const p = this.lampHead.getWorldPosition(new THREE.Vector3()).project(this.camera)
+      w.__lampAt = [(p.x * 0.5 + 0.5) * innerWidth, (-p.y * 0.5 + 0.5) * innerHeight]
+    }
     this.aimLampLight()
     const h = Math.min(dt, 1 / 30)
     for (const q of this.sheets) {
@@ -1168,6 +1210,23 @@ export class PaperDesk {
       const dx = e.clientX - this.pointer.x
       const dy = e.clientY - this.pointer.y
       this.dragPx += Math.hypot(dx, dy)
+      // crumpling, every turn of the hand — the drag doubling back on its way — is a crackle of its own
+      if (this.held.crumple < 1) {
+        const d = this.twistDir
+        const len = Math.hypot(dx, dy)
+        if (len > 0.5) {
+          const ux = dx / len
+          const uy = dy / len
+          const travelled = Math.hypot(d.x, d.y)
+          if (travelled > 18 && (ux * d.x + uy * d.y) / travelled < -0.35) {
+            const ms = Math.max(8, performance.now() - this.lastPtr.t)
+            this.crumpleSound.twist(Math.min(1, travelled / 120), Math.min(1, len / ms / 2.5), this.held.crumple)
+            d.set(0, 0)
+          }
+          // the way it's been going lately (the last ~40 px)
+          d.multiplyScalar(Math.max(0, 1 - len / 40)).add(new THREE.Vector2(dx, dy))
+        }
+      }
       if (this.held.crumple >= 1) {
         this.pxTrail.push({ x: e.clientX, y: e.clientY, t: performance.now() })
         if (this.pxTrail.length > 16) this.pxTrail.shift()
@@ -1192,6 +1251,7 @@ export class PaperDesk {
     this.down = true
     this.held = s
     this.dragPx = 0
+    this.twistDir.set(0, 0)
     s.mesh.userData.c0 = s.crumple
     s.mesh.userData.settle = false
     this.holdTrail = []
@@ -1214,6 +1274,17 @@ export class PaperDesk {
       this.setCrumple(s, 1)
       this.active = undefined
       this.throwBall(s)
+      // the fingers letting go — as hard as the flick — and the swoosh of the throw,
+      // travelling from where it left the hand toward where it's going
+      if (TOSS_TEST || this.throwSound.on) {
+        const v = s.body!.linvel()
+        const speed = Math.hypot(v.x, v.y, v.z)
+        this.crumpleSound.release(Math.min(1, speed / 6))
+        const p = s.mesh.position
+        const x0 = this._v.copy(p).project(this.camera).x
+        const x1 = this._v.set(p.x + v.x * 0.5, p.y + v.y * 0.5, p.z + v.z * 0.5).project(this.camera).x
+        this.throwSound.play(speed, x0, x1)
+      }
     }
     else {
       // let go half-crumpled: it settles back on the desk as it is (paper keeps its creases)
@@ -1356,12 +1427,20 @@ export class PaperDesk {
 
     // the sheet in the hand
     const s = this.held
+    let crumpled = 0
     if (s && this.state === 'play') {
       if (s.crumple < 1) {
         // the drag's length since the grab crumples it further (paper keeps whatever it already has)
         const want = Math.min(1, (s.mesh.userData.c0 as number) + this.dragPx / (CRUMPLE_DRAG * h))
+        const c0 = s.crumple
         this.setCrumple(s, s.crumple + (want - s.crumple) * Math.min(1, dt * 14))
-        if (want >= 1 && s.crumple > 0.97) this.setCrumple(s, 1)
+        if (want >= 1 && s.crumple > 0.97) {
+          this.setCrumple(s, 1)
+          this.crumpleSound.squeeze()
+        }
+        crumpled = s.crumple - c0
+        const p = this._v.copy(s.mesh.position).project(this.camera)
+        this.crumpleLast = { c: s.crumple, x: p.x }
         // picked up as it crumples: lifted off the desk, toward you
         const lift = THREE.MathUtils.smoothstep(s.crumple, 0, 0.5)
         const home = s.mesh.userData.home as THREE.Vector3
@@ -1373,6 +1452,8 @@ export class PaperDesk {
         }
       } else this.stepHold(s, dt)
     }
+    // the crumpling's sound: snaps while it's worked, its creases ticking a moment after
+    this.crumpleSound.update(crumpled, dt, this.crumpleLast.c, this.crumpleLast.x)
     // a half-crumpled sheet let go: back down onto the desk
     for (const q of this.sheets) {
       if (q.mesh.userData.settle && q !== this.held) {
@@ -1427,6 +1508,12 @@ export class PaperDesk {
         }
         // lumpy paper doesn't roll: on a surface (low and slow-falling) it's braked hard
         const lv = b.body.linvel()
+        // the air it cuts, flying: by its speed, its spin, how far it is, where on screen
+        {
+          const av = b.body.angvel()
+          const sp = this._v.set(t.x, t.y, t.z).project(this.camera)
+          this.tossSound.update(b, dt, Math.hypot(lv.x, lv.y, lv.z), Math.hypot(av.x, av.y, av.z), this.camera.position.distanceTo(b.mesh.position), sp.x, true)
+        }
         if (!b.mesh.userData.noBrake && Math.abs(lv.y) < 0.25 && (t.y < BALL_R + 0.01 || Math.abs(t.y - (this.deskTop + BALL_R)) < 0.01)) {
           b.body.setLinearDamping(4)
           b.body.setAngularDamping(6)

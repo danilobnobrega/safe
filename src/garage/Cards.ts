@@ -106,6 +106,11 @@ export class Cards {
     this.tex.needsUpdate = true
   }
 
+  /** (/garage-flex) card 1's painted picture, for the WebGL card */
+  get picture(): HTMLCanvasElement {
+    return this.cnv
+  }
+
   /** the cards' box in px: the window less its scrollbar */
   get box(): [number, number] {
     return [this.layer.clientWidth, this.layer.clientHeight]

@@ -9,6 +9,7 @@ import { Post } from './Post'
 import { EasedMouse } from './Mouse'
 import { Inspect } from './Inspect'
 import { ScanFocus } from './Scan'
+import { FlexCard } from './FlexCard'
 import { Annotations, NOTE_EVERY } from './Annotations'
 import { Cards, type Quad } from './Cards'
 import { ScrollSnap } from './ScrollSnap'
@@ -39,17 +40,17 @@ const FIN_SWAP = 0.95
 // where the dive's carry lands (screens, from finStart), the card filling the window — the same
 // beat the card's old fade-in ended on
 const FIN_END = 3.45
-// the scroll (screens, from finStart) at which the dive reaches FIN_SWAP
-const FIN_SWAP_AT = (() => {
+// the scroll (screens, from finStart) at which the dive reaches a swap point
+const swapAt = (swap: number): number => {
   let lo = 0
   let hi = 1
   for (let i = 0; i < 40; i++) {
     const m = (lo + hi) / 2
-    if (m * m * m * (m * (m * 6 - 15) + 10) < FIN_SWAP) lo = m
+    if (m * m * m * (m * (m * 6 - 15) + 10) < swap) lo = m
     else hi = m
   }
   return FIN_DIVE[0] + hi * (FIN_DIVE[1] - FIN_DIVE[0])
-})()
+}
 // the monitor glass's corners in its own plane (Cards.screen): TL, TR, BR, BL
 const SCREEN_CORNERS = [[-0.29, 0.165], [0.29, 0.165], [0.29, -0.165], [-0.29, -0.165]]
 const FIN_STACK = 3.6 // then each card slides up over the last, one screen each
@@ -94,6 +95,14 @@ export class Garage {
   private focusScroll: boolean
   // TEST (/garage-roles-column.html): the roles scroll up like a page, behind him
   private rolesScroll = false
+  // TEST (/garage-roles-cylinder.html): the column wrapped round a drum
+  private rolesCylinder = false
+  // TEST (/garage-flex.html): card 1 opens out of the monitor as a flexible WebGL sheet
+  private flexOpt = false
+  private flex?: FlexCard
+  private finSwap = FIN_SWAP
+  private finSwapAt = 0
+  private flexHanded = false // the sheet has settled full screen and the DOM card has taken over
   private maskRT?: THREE.WebGLRenderTarget
   private maskMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
   private focusHead = new THREE.Vector3()
@@ -116,9 +125,19 @@ export class Garage {
   private _fq = new THREE.Quaternion()
   private _flook = new THREE.Vector3()
 
-  constructor(canvas: HTMLCanvasElement, opts: { focusScroll?: boolean; rolesScroll?: boolean; rolesColumn?: boolean } = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: { focusScroll?: boolean; rolesScroll?: boolean; rolesColumn?: boolean; rolesCylinder?: boolean; flexCard?: boolean } = {}) {
+    this.flexOpt = !!opts.flexCard
+    // (flex) the card leaves the monitor much earlier — while it's still small on screen — so it has
+    // the distance to fly out as a sheet (?swap= to try others)
+    if (this.flexOpt) {
+      const q = new URLSearchParams(location.search)
+      const mode = q.get('flex') ?? 'folha'
+      this.finSwap = Number(q.get('swap') ?? (mode === 'amassa' ? 0.35 : mode === 'dobra' ? 0.45 : 0.6))
+    }
+    this.finSwapAt = swapAt(this.finSwap)
     this.focusScroll = !!opts.focusScroll
-    this.rolesScroll = !!opts.rolesScroll || !!opts.rolesColumn
+    this.rolesScroll = !!opts.rolesScroll || !!opts.rolesColumn || !!opts.rolesCylinder
+    this.rolesCylinder = !!opts.rolesCylinder
     registerChunks()
     this.readSize()
     this.renderer = new THREE.WebGLRenderer({
@@ -332,9 +351,10 @@ export class Garage {
     sp.chest.copy(this.focusHead).addScaledVector(face, 0.08).y -= 0.06
     this.notes = new Annotations()
     this.notes.scrollMode = this.rolesScroll
-    this.notes.scrollStyle = 'column'
+    this.notes.scrollStyle = this.rolesCylinder ? 'cylinder' : 'column'
     // the cards: card 1 on his monitor's glass
     this.cards = new Cards()
+    if (this.flexOpt) this.flex = new FlexCard(this.cards.picture)
     if (monitor) {
       monitor.add(this.cards.screen)
       // the glass, in the monitor's own space (the export centred it in depth: the glass's front is
@@ -346,7 +366,8 @@ export class Garage {
     }
     this.finStart = NOTES_START + this.notes.count * NOTE_EVERY
     // from where the camera first looks at his screen, one nudge carries it into the screen
-    new ScrollSnap(this.finStart + FIN_ORBIT[1], this.finStart + FIN_END)
+    // (flex: a longer carry, so the card's own flight has the time to be seen; ?carry= to try)
+    new ScrollSnap(this.finStart + FIN_ORBIT[1], this.finStart + FIN_END, this.flexOpt ? Number(new URLSearchParams(location.search).get('carry') ?? 2.8) : undefined)
     // the page is as long as the camera's move, the notes, the way out and the cards
     const scroller = document.getElementById('scroll')
     if (scroller) scroller.style.height = `${(this.finStart + FIN_STACK + (this.cards.count - 1) + TAIL + 1) * 100}vh`
@@ -427,7 +448,7 @@ export class Garage {
     // the room's lens (vignette, edge blur, fringe, glow) clears as we go in, so the
     // screen is the card's own clean picture by the time the card takes its place
     // arrives as the card itself — no pop when the real one takes over
-    const lens = 1 - THREE.MathUtils.smoothstep(dv, 0.35, FIN_SWAP)
+    const lens = 1 - THREE.MathUtils.smoothstep(dv, Math.min(0.35, this.finSwap * 0.5), this.finSwap)
     const sh = this.post!.shared
     sh.VIGNETTE_STRENGTH.value = 0.68 * lens
     sh.BLUR_STRENGTH.value = 25 * lens
@@ -436,7 +457,10 @@ export class Garage {
     if (dv > 0) {
       const fit = 0.33 / 2 / Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)
       const fill = this.screenC.clone().addScaledVector(this.screenN, fit)
-      pos.lerp(fill, dv)
+      // (flex) the camera stops where the card leaves the glass: the card alone does the travelling
+      // (eased to a stop round the swap, no jolt, so the card alone does the travelling after it)
+      const half = this.finSwap * 0.5
+      pos.lerp(fill, this.flex && dv > half ? half + half * (1 - Math.exp(-(dv - half) / half)) : dv)
       look.copy(this.screenC)
     }
     this.camera.position.copy(pos)
@@ -445,20 +469,41 @@ export class Garage {
     // the card: from FIN_SWAP pinned onto the screen's corners as the camera sees them, then
     // opening out until they are the window's
     let quad: Quad | null = null
-    if (dv >= FIN_SWAP) {
+    // (the canvas is the window's full width; the cards' box stops at the scrollbar)
+    const corners = (open: number): Quad => {
       this.camera.updateMatrixWorld()
-      // (the canvas is the window's full width; the cards' box stops at the scrollbar)
       const W = window.innerWidth
       const H = window.innerHeight
       const [bw, bh] = cards.box
-      const open = THREE.MathUtils.smootherstep(f, FIN_SWAP_AT, FIN_END)
       const win = [[0, 0], [bw, 0], [bw, bh], [0, bh]]
-      quad = SCREEN_CORNERS.map(([x, y], i): [number, number] => {
+      return SCREEN_CORNERS.map(([x, y], i): [number, number] => {
         const v = this._fc.set(x, y, 0).applyMatrix4(cards.screen.matrixWorld).project(this.camera)
         const px = ((v.x + 1) / 2) * W
         const py = ((1 - v.y) / 2) * H
         return [px + (win[i][0] - px) * open, py + (win[i][1] - py) * open]
       })
+    }
+    if (dv >= this.finSwap) quad = corners(THREE.MathUtils.smootherstep(f, this.finSwapAt, FIN_END))
+    if (this.flex) {
+      // the sheet does the opening; the DOM card only takes over once it lies flat, full screen
+      const full = !!quad && THREE.MathUtils.smootherstep(f, this.finSwapAt, FIN_END) >= 1
+      if (!full) this.flexHanded = false
+      if (!(full && this.flexHanded)) {
+        // on the way back out, past the swap, the sheet still flies home onto the glass before the
+        // monitor takes the picture back
+        // (opened out, the sheet aims a few px past the window's edges: settling, its slow trailing
+        // side then creeps in from outside the frame rather than showing a sliver of room)
+        const openK = THREE.MathUtils.smootherstep(f, this.finSwapAt, FIN_END)
+        const out = 2 * openK
+        const target = quad ? (quad.map(([x, y], i) => [x + (i === 0 || i === 3 ? -out : out), y + (i < 2 ? -out : out)]) as Quad) : this.flex.active ? corners(0) : null
+        this.flex.update(target, quad ? openK : 0)
+        if (full && this.flex.settled) this.flexHanded = true
+        if (this.flexHanded || (!quad && this.flex.settled)) this.flex.update(null)
+      }
+      // while the card is off the monitor, its glass is dark behind the sheet (else it shows where
+      // the sheet lags)
+      cards.update(quad || this.flex.active ? 0 : light, this.flexHanded ? quad : null, stack)
+      return
     }
     cards.update(light, quad, stack)
   }

@@ -244,7 +244,7 @@ export function printerReactor(printer: THREE.Group, light?: THREE.MeshBasicMate
 }
 
 /** the desk lamp: swings round on its base pivot (slow, heavy arms) and the shade nods on its hinge */
-export function lampReactor(lamp: THREE.Object3D, swivel: THREE.Object3D, head: THREE.Object3D): Reactor & { swing: () => number } {
+export function lampReactor(lamp: THREE.Object3D, swivel: THREE.Object3D, head: THREE.Object3D): Reactor & { swing: () => number; swingV: () => number; nod: () => [number, number] } {
   const yaw = new Spring(30, 2.2)
   const nod = new Spring(110, 5)
   const swivelQ = swivel.quaternion.clone()
@@ -252,6 +252,8 @@ export function lampReactor(lamp: THREE.Object3D, swivel: THREE.Object3D, head: 
   return {
     hit: lamp,
     swing: () => yaw.x,
+    swingV: () => yaw.v,
+    nod: () => [nod.x, nod.v],
     react(dir, amt, point) {
       const p = swivel.getWorldPosition(new THREE.Vector3())
       const r = _v.subVectors(point, p).setY(0)

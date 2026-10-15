@@ -29,6 +29,7 @@ const PUSH_MIN = 75 // even a slow touch launches it
 const PUSH_MAX = 200 // speed cap (CCD keeps it inside the box)
 const PUSH_MAX_STEP = 2.2 // most the cursor body travels in one frame
 const BOX_DEPTH = 1.1 // the box's half-depth around the stage plane
+const SPEED_CAP = 220 // a crumb's fastest (the walls are 4 thick: at 1/120 s steps it covers under 2)
 const BOX_INSET = 0.45 // side walls pulled in from the screen edge
 
 interface Proto {
@@ -143,9 +144,10 @@ export class CrumbRain {
     this.world = world
 
     this.floorC = world.createCollider(
-      RAPIER.ColliderDesc.cuboid(200, 0.5, 200).setFriction(0.6).setRestitution(0),
+      RAPIER.ColliderDesc.cuboid(200, 2, 200).setFriction(0.6).setRestitution(0),
     )
-    this.floorC.setTranslation({ x: 0, y: -CRUMB_VIEW_H, z: 0 })
+    // (thick, like the walls; its top where it always was, half a unit above -CRUMB_VIEW_H)
+    this.floorC.setTranslation({ x: 0, y: -CRUMB_VIEW_H - 1.5, z: 0 })
 
     if (this.push) {
       this.buildBox()
@@ -159,7 +161,9 @@ export class CrumbRain {
     this.box = []
     const W = this.halfW - BOX_INSET // inset: crumbs in front of the stage plane read wider (perspective)
     const H = CRUMB_VIEW_H
-    const T = 0.5 // wall half-thickness
+    // wall half-thickness: thick, so nothing can be squeezed or flung through one — a crumb can never
+    // travel further in one physics step than this (speeds are capped below 2T × 120 / s)
+    const T = 2
     const add = (hx: number, hy: number, hz: number, x: number, y: number, z: number) => {
       const c = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setFriction(0.5).setRestitution(0.7)) // bouncy box
       c.setTranslation({ x, y, z })
@@ -173,6 +177,18 @@ export class CrumbRain {
     this.lidded = withLid
   }
   private lidded = false
+
+  /** the lid: shut only once every crumb is inside, well below it (one still bouncing or pushed up
+   *  over the top edge at that moment would otherwise be left sitting on the lid) — else try again */
+  private shutLid = (): void => {
+    if (this.sucking || !this.world) return
+    const top = CRUMB_VIEW_H - 0.4
+    if (this.items.some((it) => it.body.translation().y > top)) {
+      window.setTimeout(this.shutLid, 150)
+      return
+    }
+    this.buildBox(true)
+  }
 
   /** crumbs the cursor touches take on its motion: its sideways speed in full, its upward
    *  speed only up to a small hop (it pushes, it never lifts) */
@@ -321,7 +337,7 @@ export class CrumbRain {
       if (++n >= total) {
         window.clearInterval(this.spawnIv)
         // close the lid once the last crumb has had time to fall in below it
-        if (this.push) window.setTimeout(() => !this.sucking && this.buildBox(true), 1200)
+        if (this.push) window.setTimeout(this.shutLid, 1200)
       }
     }, 55)
   }
@@ -409,6 +425,12 @@ export class CrumbRain {
     const heard: { it: Item; other?: Item; speed: number }[] = []
     while (this.acc >= world.timestep && steps < 3) {
       if (hear) for (const it of this.items) this.preVel.set(it, it.body.linvel())
+      // (no crumb ever outruns its walls: a step's travel stays well under a wall's thickness)
+      for (const it of this.items) {
+        const v = it.body.linvel()
+        const sp = Math.hypot(v.x, v.y, v.z)
+        if (sp > SPEED_CAP) it.body.setLinvel({ x: (v.x / sp) * SPEED_CAP, y: (v.y / sp) * SPEED_CAP, z: (v.z / sp) * SPEED_CAP }, true)
+      }
       world.step(hear ? this.events : undefined)
       const events = this.events
       if (hear) {

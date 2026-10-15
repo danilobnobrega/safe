@@ -67,6 +67,10 @@ const SCROLL_GAPS = [0.72, 0.9, 0.62, 1.0, 0.8]
 const ARROW_GAP = 80 // px between the arrow's tip and him
 const CHALK = '#efeee7'
 
+// (cylinder) the drum's radius and the eye's distance, in screen heights (?cylr= / ?cylf= to try)
+const CYL_R = Number(new URLSearchParams(location.search).get('cylr') ?? 0.55)
+const CYL_F = Number(new URLSearchParams(location.search).get('cylf') ?? 1.4)
+
 export class Annotations {
   readonly count = NOTES.length
   private cnv = document.createElement('canvas')
@@ -82,6 +86,7 @@ export class Annotations {
   private fade = 1 // the current note's opacity while it leaves
   private seed = 0
   private seedT = 0
+  private strips = new Map<string, HTMLCanvasElement>() // (cylinder) each role printed flat, to wrap round the drum
   private v = new THREE.Vector3()
   private ready = false
 
@@ -117,7 +122,10 @@ export class Annotations {
 
   /** (scroll mode) 'scattered' — each role at its own place, arrows drawn in and out (tried 2026-10-14, dropped);
    *  'column' — the first version: one centred column, evenly spaced, no arrows (/garage-roles-column) */
-  scrollStyle: 'scattered' | 'column' = 'scattered'
+  scrollStyle: 'scattered' | 'column' | 'cylinder' = 'scattered'
+  // 'cylinder' (/garage-roles-cylinder): the column printed round a drum lying on its side, turned by
+  // the scroll — nearest the camera (full size, face on) as a role crosses his head's height, curling
+  // away above and below (smaller, squashed, fainter) until it goes over the drum's edge
 
   private drawScroll(s: number, start: number, camera: THREE.Camera, spots: Record<Spot, THREE.Vector3>): void {
     const W = window.innerWidth
@@ -136,7 +144,10 @@ export class Annotations {
     // the page: a screen of scroll moves it a screen; each role sits at its own place on it — off
     // the line, not a column (some cross him, some pass beside him), at uneven distances
     const travel = (s - start) * H
-    const column = this.scrollStyle === 'column'
+    const cylinder = this.scrollStyle === 'cylinder'
+    const column = this.scrollStyle === 'column' || cylinder
+    const R = H * CYL_R // the drum's radius, px
+    const F = H * CYL_F // the eye's distance (perspective), px
     const c = this.ctx
     c.setTransform(1, 0, 0, 1, 0, 0)
     c.clearRect(0, 0, this.cnv.width, this.cnv.height)
@@ -148,8 +159,12 @@ export class Annotations {
     NOTES.forEach((n, i) => {
       along += i === 0 ? 0 : (column ? NOTE_EVERY * 0.62 : SCROLL_GAPS[(i - 1) % SCROLL_GAPS.length]) * H
       // where it is now: entering from the bottom and going up
-      const y = H * 1.08 + along - travel
-      if (y < -H * 0.2 || y > H * 1.2) return
+      // (cylinder: the page wraps the drum — it starts where the drum's underside turns out of view)
+      const y = (cylinder ? headPt.y + R * Math.PI * 0.5 : H * 1.08) + along - travel
+      if (!cylinder && (y < -H * 0.2 || y > H * 1.2)) return
+      // on the drum: how far round it is from the front (rad), and where that puts it on screen
+      const th = cylinder ? (y - headPt.y) / R : 0
+      if (cylinder && Math.abs(th) > Math.PI * 0.5 + 0.6) return // (its lower line may still show)
       any = true
       const titlePx = TITLE_PX * 1.25
       const subPx = SUB_PX * 1.2
@@ -159,8 +174,58 @@ export class Annotations {
       const sw = c.measureText(n.sub).width
       const bw = Math.max(tw, sw)
       const cx = column ? headPt.x : THREE.MathUtils.clamp(headPt.x + SCROLL_X[i % SCROLL_X.length] * W, SAFE_X * W + bw / 2, (1 - SAFE_X) * W - bw / 2)
-      c.globalAlpha = 1
       c.textAlign = 'center'
+      if (cylinder) {
+        // the role (title and line under it) printed flat on a strip, then wrapped round the drum in
+        // 2 px slices, each to its own place on the curve: what's lower on the strip always lands
+        // lower on screen (only more squeezed towards the drum's edge), so nothing can overlap
+        const pad = 6
+        const bh = Math.ceil(titlePx + subPx * 2.2 + subPx * 0.45 + pad * 2)
+        const bwp = Math.ceil(bw + pad * 2)
+        const key = `${i}|${titlePx}|${subPx}|${dpr}`
+        let strip = this.strips.get(key)
+        if (!strip) {
+          const sc = document.createElement('canvas')
+          sc.width = Math.ceil(bwp * dpr * 1.5)
+          sc.height = Math.ceil(bh * dpr * 1.5)
+          const sx = sc.getContext('2d')!
+          sx.scale(dpr * 1.5, dpr * 1.5)
+          sx.fillStyle = CHALK
+          sx.textAlign = 'center'
+          sx.textBaseline = 'alphabetic'
+          sx.font = `italic 400 ${titlePx}px TinosNote`
+          sx.fillText(n.title, bwp / 2, pad + titlePx)
+          sx.globalAlpha = 0.88
+          sx.font = `italic 400 ${subPx}px TinosNote`
+          sx.fillText(n.sub, bwp / 2, pad + titlePx + subPx * 2.2)
+          strip = sc
+          if (this.ready) this.strips.set(key, strip) // (only once the font is in)
+        }
+        const top = y - pad - titlePx // the strip's top, on the flat page
+        const onDrum = (fy: number) => {
+          const a = THREE.MathUtils.clamp((fy - headPt.y) / R, -Math.PI / 2, Math.PI / 2)
+          const k = F / (F + R * (1 - Math.cos(a))) // farther round = farther away = smaller
+          return { a, k, sy: headPt.y + R * Math.sin(a) * k }
+        }
+        const SL = 2
+        const sk = strip.width / bwp // strip px per css px
+        for (let s0 = 0; s0 < bh; s0 += SL) {
+          const f0 = top + s0
+          const f1 = top + Math.min(bh, s0 + SL)
+          if (Math.abs((f0 - headPt.y) / R) > Math.PI / 2 || Math.abs((f1 - headPt.y) / R) > Math.PI / 2) continue
+          const p0 = onDrum(f0)
+          const p1 = onDrum(f1)
+          const k = (p0.k + p1.k) / 2
+          const dw = bwp * k
+          const dx = headPt.x + (cx - headPt.x) * k - dw / 2
+          c.globalAlpha = 0.25 + 0.75 * Math.cos((p0.a + p1.a) / 2)
+          c.drawImage(strip, 0, s0 * sk, strip.width, (f1 - f0) * sk, dx, p0.sy, dw, p1.sy - p0.sy)
+        }
+        c.setTransform(dpr, 0, 0, dpr, 0, 0)
+        c.textAlign = 'left'
+        return
+      }
+      c.globalAlpha = 1
       c.font = `italic 400 ${titlePx}px TinosNote`
       c.fillText(n.title, cx + this.j(1) * 0.4, y + this.j(2) * 0.4)
       c.globalAlpha = 0.88
