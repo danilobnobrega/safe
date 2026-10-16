@@ -26,7 +26,7 @@ const SET = SETS[Q.get('crumple') ?? 'b'] ?? null
 const RATE_FULL = 1.6 // crumple per second that is a hard, fast squeeze
 const SNAPS_FULL = 70 // snaps per second at that rate
 
-type Snap = { buf: AudioBuffer; at: number; len: number; gain: number; bright: number }
+export type Snap = { buf: AudioBuffer; at: number; len: number; gain: number; bright: number }
 
 export class PaperCrumple {
   private ctx?: AudioContext
@@ -100,6 +100,12 @@ export class PaperCrumple {
     this.work = Math.min(1, this.work + 0.25 * size)
   }
 
+  /** the ball has left the hand: its creases' after-ticks stop there (they belong to paper lying
+   *  still, not to a ball in the air) */
+  thrown(): void {
+    this.work = 0
+  }
+
   /** (the toss) the fingers letting go of the ball: a couple of small, dry ticks — the ball easing
    *  open a hair — as loud as the flick was hard (0..1) */
   release(hard: number): void {
@@ -108,6 +114,18 @@ export class PaperCrumple {
     const t0 = ctx.currentTime + 0.004
     const n = 1 + Math.round(Math.random() + hard * 1.5)
     for (let i = 0; i < n; i++) this.fire(t0 + i * (0.018 + Math.random() * 0.03), 1, (0.22 + 0.3 * hard) * (i ? 0.6 : 1), i === 0)
+  }
+
+  /** (a ball hitting something) the ball crushed for an instant: a few snaps packed into a few ms,
+   *  more and brighter the harder (0..1+), placed at `x` across the screen */
+  impact(s: number, x: number): void {
+    const ctx = this.ctx
+    if (!ctx || !this.snaps.length || ctx.state !== 'running' || s < 0.03) return
+    this.pan!.pan.setValueAtTime(Math.max(-0.6, Math.min(0.6, x * 0.6)), ctx.currentTime)
+    const t0 = ctx.currentTime + 0.004
+    const n = 1 + Math.round(Math.min(1, s) * 5 + Math.random())
+    const spread = 0.006 + 0.012 * Math.min(1, s)
+    for (let i = 0; i < n; i++) this.fire(t0 + Math.random() * spread, 0.75 + 0.25 * Math.min(1, s), (0.18 + 0.7 * Math.min(1, s)) * (i ? 0.55 + 0.45 * Math.random() : 1), i === 0)
   }
 
   /** the last squeeze into a ball: a short dense crunch */
@@ -148,7 +166,7 @@ export class PaperCrumple {
 /** the single snaps in a recording: onsets on a 2 ms envelope (a sharp rise well over the floor),
  *  each run until it has died to a fraction of its peak (25 .. 170 ms), its loudness evened out and
  *  its brightness measured (zero crossings per second) */
-function cutSnaps(b: AudioBuffer): Snap[] {
+export function cutSnaps(b: AudioBuffer): Snap[] {
   const sr = b.sampleRate
   const d = new Float32Array(b.length)
   for (let c = 0; c < b.numberOfChannels; c++) {

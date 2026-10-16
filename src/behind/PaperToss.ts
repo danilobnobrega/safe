@@ -22,8 +22,9 @@ export class PaperToss {
   private noise?: AudioBuffer
   private voices = new Map<object, Voice>()
 
-  constructor() {
-    if (!ON) return
+  /** `force`: made for use elsewhere (the hero's suction tries it), whatever ?toss says */
+  constructor(force = false) {
+    if (!ON && !force) return
     const { ctx } = sfx()
     // two seconds of noise, a touch pink (more body than white: air, not static)
     const n = ctx.sampleRate * 2

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import RAPIER from '@dimforge/rapier3d-compat'
 import { CrumbSound } from './CrumbSound'
+import { CrumbHits } from './CrumbHits'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { normalizeModel } from '../models/normalize'
 
@@ -75,6 +76,8 @@ export class CrumbRain {
   private items: Item[] = []
   // TEST (?crumbsound=…): the pile heard — off unless asked for
   readonly sound = new CrumbSound()
+  // every touch heard (CrumbHits: the pops)
+  private hits = new CrumbHits()
   // (?crumbdebug) every crumb that makes a sound flashes big for a beat, at that very moment
   private debugFlash = new URLSearchParams(location.search).has('crumbdebug')
   // (sound) the physics' own contacts: each new touch, the moment it happens
@@ -177,6 +180,8 @@ export class CrumbRain {
     this.lidded = withLid
   }
   private lidded = false
+  private suckT0 = 0
+  private dtAvg = 1 / 60
 
   /** the lid: shut only once every crumb is inside, well below it (one still bouncing or pushed up
    *  over the top edge at that moment would otherwise be left sitting on the lid) — else try again */
@@ -351,6 +356,8 @@ export class CrumbRain {
     if (!on || this.sucking || !this.running) return // nothing to suck until a pile exists
     this.sucking = true
     this.sound.suck()
+    this.suckT0 = performance.now()
+    if (location.search.includes('crumbdebug')) console.log('[crumbs] suck starts,', this.items.length, 'crumbs')
     if (this.spawnIv) window.clearInterval(this.spawnIv)
     if (this.world && this.floorC) this.world.removeCollider(this.floorC, false)
     // the box opens: the suck is the only way out
@@ -365,6 +372,39 @@ export class CrumbRain {
     sorted.forEach((it, i) => {
       it.dir = i < mid ? -1 : 1
     })
+    // (its sound, told how long the pile will really take to go)
+    try {
+      this.hits.suckStart(this.items.length, this.exodus())
+    } catch {
+      // (a sound never stops the crumbs)
+    }
+  }
+
+  /** (the suction's sound) how long, in s, until the last crumb is out — pullAside's own pull walked
+   *  ahead for each crumb, at this machine's own frame rate (the physics takes at most 3 steps a frame:
+   *  on a slower frame rate the pile really does go slower) */
+  private exodus(): number {
+    const ts = this.world?.timestep ?? 1 / 120
+    const dt = Math.max(1 / 240, this.dtAvg)
+    const edge = this.halfW * 1.3
+    let worst = 0
+    for (const it of this.items) {
+      let x = it.body.translation().x
+      let v = it.body.linvel().x
+      const dir = it.dir ?? (x >= 0 ? 1 : -1)
+      let acc = 0
+      let f = 0
+      for (; f < 150 && Math.abs(x) <= edge; f++) {
+        v += (dir * (7 + Math.abs(x) * 5) - v) * 0.4
+        acc = Math.min(acc + dt, ts * 3)
+        const steps = Math.floor(acc / ts)
+        acc -= steps * ts
+        x += v * steps * ts
+      }
+      worst = Math.max(worst, f * dt)
+    }
+    if (location.search.includes('crumbdebug')) console.log('[crumbs] exodus predicted', worst.toFixed(3), 's at', (1 / dt).toFixed(0), 'fps')
+    return worst
   }
 
   private spawn(proto: Proto): void {
@@ -402,6 +442,7 @@ export class CrumbRain {
   step(dt: number): void {
     const world = this.world
     if (!world || !this.running) return
+    this.dtAvg += (Math.min(0.1, dt) - this.dtAvg) * 0.1 // (this machine's frame time, for the suction's sound)
 
     if (this.sucking) this.pullAside()
 
@@ -421,7 +462,7 @@ export class CrumbRain {
     }
     if (this.push && to && from) this.shove(from, to, dt)
     let steps = 0
-    const hear = this.sound.on && !this.sucking && !!this.events
+    const hear = (this.sound.on || this.hits.on) && !this.sucking && !!this.events
     const heard: { it: Item; other?: Item; speed: number }[] = []
     while (this.acc >= world.timestep && steps < 3) {
       if (hear) for (const it of this.items) this.preVel.set(it, it.body.linvel())
@@ -464,7 +505,21 @@ export class CrumbRain {
       it.mesh.position.set(t.x, t.y, t.z)
       it.mesh.quaternion.set(r.x, r.y, r.z, r.w)
     }
-    if (heard.length) {
+    if (heard.length && this.hits.on) {
+      // every touch, hardest first — a crowd of them each a little quieter, run
+      // together into a patter
+      heard.sort((p, q) => q.speed - p.speed)
+      const some = heard.filter((h) => h.speed >= LAND_MIN).slice(0, 16)
+      const mix = 1 / Math.pow(Math.max(1, some.length), 0.35)
+      for (const h of some) {
+        const x = h.it.body.translation().x / Math.max(1e-3, this.halfW)
+        try {
+          this.hits.hit(this.kindNow, h.speed, x, !!h.other, mix)
+        } catch {
+          // (a sound never stops the crumbs)
+        }
+      }
+    } else if (heard.length) {
       // this frame's touches, hardest first: the few you'd hear; a touch too soft to see is silent
       heard.sort((p, q) => q.speed - p.speed)
       // (a crumb is heard landing once — after it's dropped, after it's shoved; its bounces and grazes are not)
@@ -504,10 +559,23 @@ export class CrumbRain {
     const edge = this.halfW * 1.3
     const bail = this.suckFrames > 150 // hard cap so the doors never wait forever
 
+    let pull = 0
+    let lean = 0
     for (let i = this.items.length - 1; i >= 0; i--) {
       const it = this.items[i]
       const t = it.body.translation()
+      const lv = it.body.linvel()
+      pull += Math.abs(lv.x)
+      lean += Math.sign(lv.x)
       if (bail || Math.abs(t.x) > edge) {
+        if (!bail) {
+          try {
+            this.hits.suckOut(t.x < 0 ? -1 : 1)
+          } catch {
+            // (a sound never stops the crumbs)
+          }
+        }
+        if (location.search.includes('crumbdebug')) console.log('[crumbs] out', ((performance.now() - this.suckT0) / 1000).toFixed(3), bail ? '(bail)' : '')
         it.mesh.visible = false
         world.removeRigidBody(it.body)
         this.items.splice(i, 1)
@@ -521,6 +589,19 @@ export class CrumbRain {
       it.body.setLinvel({ x: THREE.MathUtils.lerp(v.x, targetVx, 0.4), y: v.y * 0.7, z: v.z * 0.7 }, true)
     }
 
-    if (this.items.length === 0) this.running = false
+    try {
+      const n = Math.max(1, this.items.length)
+      this.hits.suckAir(1 / 60, pull / n, lean / n, this.items.length > 0)
+    } catch {
+      // (a sound never stops the crumbs)
+    }
+    if (this.items.length === 0 && this.running) {
+      this.running = false
+      try {
+        this.hits.suckEnd()
+      } catch {
+        // (a sound never stops the crumbs)
+      }
+    }
   }
 }

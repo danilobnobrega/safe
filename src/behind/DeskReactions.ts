@@ -86,12 +86,14 @@ const _q = new THREE.Quaternion()
 const _v = new THREE.Vector3()
 
 /** desk: the drawers slide out and back (the top stays put — Danilo) */
-export function deskReactor(desk: THREE.Group): Reactor {
+export function deskReactor(desk: THREE.Group): Reactor & { drawers: () => number[] } {
   const later = new Later()
   const parts = desk.children as THREE.Mesh[]
   const drawers = parts.filter((p) => /drawer|tray/.test(p.name)).map((m) => ({ m, s: new Spring(150, 8) }))
   return {
     hit: desk,
+    // where each drawer is, as drawn (m out of its slot) — for its sound
+    drawers: () => drawers.map((d) => THREE.MathUtils.clamp(d.s.x, 0, 0.09)),
     react(_dir, amt, _point, part) {
       // only the drawer under the cursor (each thing answers on its own — Danilo)
       const d = drawers.find((q) => q.m === part)
@@ -189,10 +191,11 @@ export function pensReactor(pens: THREE.Group): Reactor {
 }
 
 /** the bin: spins on its base, wobbles on its rim — a light metal bin, slow to settle */
-export function binReactor(bin: THREE.Object3D): Reactor & { rock(dir: THREE.Vector3, amt: number): void } {
-  const yaw = new Spring(18, 1.6)
-  const tx = new Spring(220, 9)
-  const tz = new Spring(220, 9)
+export function binReactor(bin: THREE.Object3D): Reactor & { rock(dir: THREE.Vector3, amt: number): void; motion(): { yawV: number; tx: number; txV: number; tz: number; tzV: number } } {
+  // (damped a touch more than at first: it settles a little sooner after a bump — Danilo)
+  const yaw = new Spring(18, 2.1)
+  const tx = new Spring(220, 11)
+  const tz = new Spring(220, 11)
   const restQ = bin.quaternion.clone()
   const rock = (dir: THREE.Vector3, amt: number) => {
     tx.v += dir.z * amt * 2.2
@@ -201,6 +204,8 @@ export function binReactor(bin: THREE.Object3D): Reactor & { rock(dir: THREE.Vec
   return {
     hit: bin,
     rock,
+    // (its sound) how it's turning and tipping
+    motion: () => ({ yawV: yaw.v, tx: tx.x, txV: tx.v, tz: tz.x, tzV: tz.v }),
     react(dir, amt, point) {
       // brushed on one side, it turns: which way depends on the side and the direction
       const r = _v.subVectors(point, bin.position).setY(0)

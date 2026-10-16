@@ -8,6 +8,10 @@ import { LampCreak } from './LampCreak'
 import { PaperCrumple } from './PaperCrumple'
 import { PaperToss, TOSS_TEST } from './PaperToss'
 import { PaperThrow } from './PaperThrow'
+import { BallHits, HITS_ON, type Surface } from './BallHits'
+import { DiveSound } from './DiveSound'
+import { DrawerSound } from './DrawerSound'
+import { BinSound } from './BinSound'
 import { Spring, flatten, deskReactor, pensReactor, binReactor, printerReactor, lampReactor, clockReactor, booksReactor, plantReactor, type Reactor } from './DeskReactions'
 
 /**
@@ -137,6 +141,14 @@ export class PaperDesk {
   private crumpleSound = new PaperCrumple()
   private tossSound = new PaperToss() // (parked: ?toss=on)
   private throwSound = new PaperThrow()
+  private hitSound = new BallHits(this.crumpleSound)
+  private diveSound = new DiveSound(BIN.h)
+  private drawerSound = new DrawerSound()
+  private binSound = new BinSound()
+  private drawersAt?: () => number[]
+  private deskObj?: THREE.Object3D
+  private diveWas = new THREE.Vector3()
+  private lastDt = 1 / 60
   private crumpleLast = { c: 0, x: 0 } // (the last sheet crumpled: for its after-ticks)
   private lampSwingV?: () => number
   private lampNod?: () => [number, number]
@@ -310,7 +322,10 @@ export class PaperDesk {
     this.binR = binReactor(bin)
     const lamp = this.buildLamp(lampSrc)
     void printer // (its hover off — Danilo didn't like the hum either; to be agreed)
-    this.reactors = [deskReactor(desk), pensReactor(pens), this.binR, lamp, ...(PROPS === 'mix' ? await this.buildMixProps(loader) : [])]
+    const deskR = deskReactor(desk)
+    this.drawersAt = deskR.drawers
+    this.deskObj = desk
+    this.reactors = [deskR, pensReactor(pens), this.binR, lamp, ...(PROPS === 'mix' ? await this.buildMixProps(loader) : [])]
     // the floor: the same chalk, fading out a few metres away (far off, at a grazing angle, its
     // hatching piled up into a pale band along the horizon)
     const floorMat = this.chalkMat.clone()
@@ -580,6 +595,18 @@ export class PaperDesk {
       }
     }
     for (const r of this.reactors) r.step(dt)
+    if (this.drawersAt && this.deskObj) {
+      // (the drawers' sound: each one's place, and the desk's place across the screen)
+      const xs = this.drawersAt()
+      const sx = this._v.setFromMatrixPosition(this.deskObj.matrixWorld).project(this.camera).x
+      this.quiet(() => this.drawerSound.update(dt, xs, xs.map(() => sx)))
+    }
+    if (this.binR) {
+      // (the bin's sound: how it's turning and tipping, and where it is across the screen)
+      const m = this.binR.motion()
+      const bx = this._v.set(BIN.x, BIN.h * 0.5, BIN.z).project(this.camera).x
+      this.quiet(() => this.binSound.update(dt, m, bx))
+    }
     let seen: THREE.Vector2 | undefined
     if (this.lampHead && this.lampShade && dt > 0) {
       // the shade's velocity on screen, in screen-heights per second — the LAMP's own: where it is
@@ -593,7 +620,9 @@ export class PaperDesk {
       if (this.lampWas) seen = scr(at).sub(scr(this.lampWas)).divideScalar(dt)
       this.lampWas = at
     }
-    if (this.lampSwing && this.lampSwingV) this.lampCreak.update(dt, this.lampSwing(), this.lampSwingV(), seen)
+    const swing = this.lampSwing
+    const swingV = this.lampSwingV
+    if (swing && swingV) this.quiet(() => this.lampCreak.update(dt, swing(), swingV(), seen))
     if (this.lampSwing && this.lampSwingV && this.lampNod && this.lampHead && Q.has('creakdebug')) {
       // (creakdebug) a frame-by-frame log of the lamp and its sound, and where it is on screen
       const w = window as unknown as { __creak?: number[][]; __lampAt?: number[] }
@@ -1220,7 +1249,8 @@ export class PaperDesk {
           const travelled = Math.hypot(d.x, d.y)
           if (travelled > 18 && (ux * d.x + uy * d.y) / travelled < -0.35) {
             const ms = Math.max(8, performance.now() - this.lastPtr.t)
-            this.crumpleSound.twist(Math.min(1, travelled / 120), Math.min(1, len / ms / 2.5), this.held.crumple)
+            const c = this.held.crumple
+            this.quiet(() => this.crumpleSound.twist(Math.min(1, travelled / 120), Math.min(1, len / ms / 2.5), c))
             d.set(0, 0)
           }
           // the way it's been going lately (the last ~40 px)
@@ -1274,16 +1304,16 @@ export class PaperDesk {
       this.setCrumple(s, 1)
       this.active = undefined
       this.throwBall(s)
-      // the fingers letting go — as hard as the flick — and the swoosh of the throw,
-      // travelling from where it left the hand toward where it's going
+      this.quiet(() => this.crumpleSound.thrown())
+      // the swoosh of the throw, travelling from where it left the hand toward where it's going
+      // (no paper tick on the release: made of the crumple's snaps, it read as crumpling — Danilo)
       if (TOSS_TEST || this.throwSound.on) {
         const v = s.body!.linvel()
         const speed = Math.hypot(v.x, v.y, v.z)
-        this.crumpleSound.release(Math.min(1, speed / 6))
         const p = s.mesh.position
         const x0 = this._v.copy(p).project(this.camera).x
         const x1 = this._v.set(p.x + v.x * 0.5, p.y + v.y * 0.5, p.z + v.z * 0.5).project(this.camera).x
-        this.throwSound.play(speed, x0, x1)
+        this.quiet(() => this.throwSound.play(speed, x0, x1))
       }
     }
     else {
@@ -1311,6 +1341,8 @@ export class PaperDesk {
       const target = speed > 120 ? this.aimAt(p, vx / speed, vy / speed, dist) : null
       if (target) this.arcTo(p, target, v)
     }
+    // (TEST ?acerta — for trying the dive: every throw goes straight in)
+    if (new URLSearchParams(location.search).has('acerta') && !s.thrown) this.arcTo(p, new THREE.Vector3(BIN.x, BIN.h + 0.01, BIN.z), v) // (through the mouth's middle)
     const body = this.world!.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(p.x, p.y, p.z)
@@ -1400,6 +1432,42 @@ export class PaperDesk {
     if (fallback) out.copy(fallback)
   }
 
+  /** a sound call, isolated: whatever goes wrong in the audio, it stays silent there and never breaks
+   *  the frame (a non-finite value into an AudioParam once froze the page after the cubes — 2026-10-15) */
+  private quiet(f: () => void): void {
+    try {
+      f()
+    } catch (e) {
+      if (!this.quietWarned) console.warn('[sound]', e)
+      this.quietWarned = true
+    }
+  }
+  private quietWarned = false
+
+  /** (hits) what a ball at `t` is touching: the bin (its rim, its wall from outside or inside), the
+   *  printer, the desk (top or side), or the floor */
+  private surfaceAt(t: { x: number; y: number; z: number }): Surface {
+    const r = Math.hypot(t.x - BIN.x, t.z - BIN.z)
+    const k = THREE.MathUtils.clamp(t.y / BIN.h, 0, 1)
+    const wall = BIN.rBottom + (BIN.rTop - BIN.rBottom) * k
+    if (t.y < BIN.h + BALL_R + 0.02 && r < BIN.rTop + BALL_R + 0.03) {
+      if (t.y > BIN.h - 0.03 && Math.abs(r - BIN.rTop) < BALL_R + 0.03) return 'rim'
+      if (r < wall) return 'binIn'
+      if (r < wall + BALL_R + 0.025) return 'binOut'
+    }
+    const local = new THREE.Vector3()
+    const inv = new THREE.Quaternion()
+    for (const b of this.printerSolids) {
+      local.set(t.x, t.y, t.z).sub(b.centre).applyQuaternion(inv.copy(b.quat).invert())
+      const m = BALL_R + 0.02
+      if (Math.abs(local.x) < b.half.x + m && Math.abs(local.y) < b.half.y + m && Math.abs(local.z) < b.half.z + m) return 'printer'
+    }
+    const overDesk = Math.abs(t.x) < 1.0 + BALL_R + 0.02 && Math.abs(t.z) < 0.475 + BALL_R + 0.02
+    if (overDesk && t.y > this.deskTop - 0.02) return 'desk'
+    if (overDesk && t.y > BALL_R + 0.03) return 'deskSide'
+    return 'floor'
+  }
+
   /** whether a ball thrown from `p` at `v` stays above the desk top while it's over it */
   private clearsDesk(p: THREE.Vector3, v: THREE.Vector3): boolean {
     const top = this.deskTop + BALL_R + 0.025
@@ -1417,6 +1485,7 @@ export class PaperDesk {
   step(dt: number): void {
     if (!this.shown || !this.ready) return
     this.t += dt
+    this.lastDt = dt
     const { w, h } = this.view()
     if (this.camera.aspect !== w / h) {
       this.camera.aspect = w / h
@@ -1436,7 +1505,7 @@ export class PaperDesk {
         this.setCrumple(s, s.crumple + (want - s.crumple) * Math.min(1, dt * 14))
         if (want >= 1 && s.crumple > 0.97) {
           this.setCrumple(s, 1)
-          this.crumpleSound.squeeze()
+          this.quiet(() => this.crumpleSound.squeeze())
         }
         crumpled = s.crumple - c0
         const p = this._v.copy(s.mesh.position).project(this.camera)
@@ -1453,7 +1522,7 @@ export class PaperDesk {
       } else this.stepHold(s, dt)
     }
     // the crumpling's sound: snaps while it's worked, its creases ticking a moment after
-    this.crumpleSound.update(crumpled, dt, this.crumpleLast.c, this.crumpleLast.x)
+    this.quiet(() => this.crumpleSound.update(crumpled, dt, this.crumpleLast.c, this.crumpleLast.x))
     // a half-crumpled sheet let go: back down onto the desk
     for (const q of this.sheets) {
       if (q.mesh.userData.settle && q !== this.held) {
@@ -1512,7 +1581,7 @@ export class PaperDesk {
         {
           const av = b.body.angvel()
           const sp = this._v.set(t.x, t.y, t.z).project(this.camera)
-          this.tossSound.update(b, dt, Math.hypot(lv.x, lv.y, lv.z), Math.hypot(av.x, av.y, av.z), this.camera.position.distanceTo(b.mesh.position), sp.x, true)
+          this.quiet(() => this.tossSound.update(b, dt, Math.hypot(lv.x, lv.y, lv.z), Math.hypot(av.x, av.y, av.z), this.camera.position.distanceTo(b.mesh.position), sp.x, true))
         }
         if (!b.mesh.userData.noBrake && Math.abs(lv.y) < 0.25 && (t.y < BALL_R + 0.01 || Math.abs(t.y - (this.deskTop + BALL_R)) < 0.01)) {
           b.body.setLinearDamping(4)
@@ -1528,6 +1597,16 @@ export class PaperDesk {
           const dv = pv.distanceTo(nv)
           const near = Math.hypot(t.x - BIN.x, t.z - BIN.z) < BIN.rTop + 0.08 && t.y < BIN.h + 0.06
           if (near && dv > 0.7) this.binR?.rock(pv.clone().setY(0).normalize(), Math.min(dv / 3, 1.2))
+          // a bounce: its speed changed more than gravity alone would change it
+          if (HITS_ON) {
+            const kick = Math.hypot(nv.x - pv.x, nv.y - pv.y + 9.81 * dt, nv.z - pv.z)
+            const now = performance.now()
+            if (kick > 0.35 && now - ((b.mesh.userData.hitAt as number) ?? -1e9) > 45) {
+              b.mesh.userData.hitAt = now
+              const sp = this._v.set(t.x, t.y, t.z).project(this.camera)
+              this.quiet(() => this.hitSound.hit(this.surfaceAt(t), kick, sp.x, this.camera.position.distanceTo(b.mesh.position)))
+            }
+          }
         }
         b.mesh.userData.pv = nv
         this.judge(b, dt)
@@ -1686,6 +1765,20 @@ export class PaperDesk {
     this.t = 0
     this.diveFrom.pos.copy(this.camera.position)
     this.diveFrom.quat.copy(this.camera.quaternion)
+    this.diveWas.copy(this.camera.position)
+    this.quiet(() => this.diveSound.start(DIVE_TIME, this.diveRimTime()))
+  }
+
+  /** (the dive's sound) when, in s, the camera goes in past the bin's rim — its path in stepDive,
+   *  walked ahead of time */
+  private diveRimTime(): number {
+    for (let k = 0; k <= 1; k += 0.005) {
+      const e = k * k * (3 - 2 * k)
+      const overY = BIN.h + 0.55 - e * 0.62
+      const y = THREE.MathUtils.lerp(this.diveFrom.pos.y, overY, Math.min(1, e * 1.4))
+      if (y <= BIN.h + 0.02) return k * DIVE_TIME
+    }
+    return DIVE_TIME * 0.8
   }
 
   private stepDive(): void {
@@ -1698,6 +1791,11 @@ export class PaperDesk {
     this._q.setFromRotationMatrix(this._m)
     this.camera.quaternion.slerpQuaternions(this.diveFrom.quat, this._q, Math.min(1, e * 1.6))
     this.fade = THREE.MathUtils.smoothstep(k, 0.62, 1)
+    // (its sound: by the camera's real speed, how near the bin's mouth it is, how far into black)
+    const moved = this.camera.position.distanceTo(this.diveWas)
+    this.diveWas.copy(this.camera.position)
+    const mouth = this._v.set(BIN.x, BIN.h, BIN.z)
+    this.quiet(() => this.diveSound.update(moved / Math.max(1e-3, this.lastDt), this.camera.position.distanceTo(mouth), this.fade))
     if (k >= 1) {
       this.state = 'done'
       this.onDone?.()

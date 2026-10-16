@@ -1,3 +1,4 @@
+import { WeAreSound } from './WeAreSound'
 import * as THREE from 'three'
 import { TTFLoader } from 'three/examples/jsm/loaders/TTFLoader.js'
 import { Font } from 'three/examples/jsm/loaders/FontLoader.js'
@@ -349,6 +350,7 @@ export class ShaderHero {
   /** TEST (/hero-letters.html): "We are" as separate letters that dodge the cursor (and are
    *  never cut by the holes) */
   private weAreDodge = false
+  private weSound = new WeAreSound() // TEST (?wesound=pop|papel|giz)
   /** the reveal pinned to the surfaces: each fragment looks the holes up where it sat with the
    *  doors shut (rest camera x its own rest matrix), so as the cubes swing and recede the holes
    *  and the letters in them ride along instead of staying put on the screen */
@@ -3001,6 +3003,7 @@ export class ShaderHero {
     const my = (1 - this.target.y) * this.H
     const on = this.pointerInside && doorsShut
     const h = Math.min(dt, 1 / 30)
+    const xs: number[] = []
     for (const L of this.weLetters) {
       // the letter's screen position at home (the push is computed from where it belongs, so
       // it doesn't run away from its own displacement)
@@ -3008,6 +3011,7 @@ export class ShaderHero {
       L.mesh.parent!.localToWorld(v).project(this.doorCam)
       const lx = (v.x * 0.5 + 0.5) * this.W
       const ly = (1 - (v.y * 0.5 + 0.5)) * this.H
+      xs.push(v.x)
       let tx = 0
       let ty = 0
       const dx = lx - mx
@@ -3034,6 +3038,12 @@ export class ShaderHero {
       const lift = Math.min(Math.hypot(L.off.x, L.off.y) / 30, 1) * this.weLift
       L.mesh.position.set(L.home.x + L.off.x * this.wePxToWorld, L.home.y - L.off.y * this.wePxToWorld, L.home.z + lift)
       L.mesh.rotation.z = L.rot
+    }
+    // (their sound: each one's leap and return)
+    try {
+      this.weSound.update(this.weLetters, xs)
+    } catch {
+      // (a sound never stops the letters)
     }
   }
 
