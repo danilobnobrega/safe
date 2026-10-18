@@ -9,6 +9,7 @@
 //   ?troca=<s>      seconds between hovers (default 3.5)
 //   ?letras=hover|sempre|off   letters restyle only while hovered (default) / all the time / never
 import { GizSign } from './GizSign'
+import { TILT, startTilt } from '../ui/tilt'
 import { GizLetters, fontKey, type Fx, type GizHost } from './GizLetters'
 
 const Q = new URLSearchParams(location.search)
@@ -18,10 +19,12 @@ export const ORANGE = '#ff9a4d'
 export const MONO = '"IBM Plex Mono", Consolas, monospace'
 
 // ---- faces: the most generic fonts a template ever offered ------------------------------------
-type Face = { fam: string; weights: number[]; italic: boolean; caps?: boolean }
+export type Face = { fam: string; weights: number[]; italic: boolean; caps?: boolean }
 export const FACES: Face[] = [
+  // (Danilo, 2026-10-18: Arimo and Bebas Neue out; Press Start 2P and Permanent Marker in, from the
+  // candidates tried on /hero-hovers-fontes.html — Rye, Stardos Stencil, Roboto Slab, Special Elite and
+  // UnifrakturMaguntia turned down)
   { fam: 'Tinos', weights: [400, 700], italic: true }, // Times
-  { fam: 'Arimo', weights: [400, 700], italic: true }, // Arial
   { fam: 'Cousine', weights: [400, 700], italic: true }, // Courier
   { fam: 'Comic Neue', weights: [300, 400, 700], italic: true },
   { fam: 'Anton', weights: [400], italic: false },
@@ -29,8 +32,9 @@ export const FACES: Face[] = [
   { fam: 'Archivo Black', weights: [400], italic: false },
   { fam: 'Playfair Display', weights: [400, 900], italic: true },
   { fam: 'Lobster', weights: [400], italic: false },
-  { fam: 'Bebas Neue', weights: [400], italic: false, caps: true },
   { fam: 'Pacifico', weights: [400], italic: false },
+  { fam: 'Press Start 2P', weights: [400], italic: false }, // pixel
+  { fam: 'Permanent Marker', weights: [400], italic: false },
 ]
 export type Style = { f: number; w: number; it: boolean; up: boolean; sc: number; col: string | null }
 export const HOME: Style = { f: 0, w: 700, it: false, up: true, sc: 1, col: null }
@@ -54,6 +58,11 @@ export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]
 export const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v))
 export const ease = (dt: number, rate: number) => 1 - Math.exp(-dt * rate)
 export const pre = (s: Style) => `${s.it ? 'italic ' : ''}${s.w}`
+/** the faces in play (/hero-hovers-fontes.html turns them on and off; none = every letter home) */
+export const FACE_ON = new Set(FACES.map((_, i) => i))
+/** candidates on trial (/hero-hovers-fontes.html only): added to FACES there, listed apart */
+export const TRIAL_FACES: Face[] = [] // (none on trial now)
+let BASE_FACES = FACES.length
 /** which font cuts may be picked (the giz route: only the ones whose TTF has loaded) */
 let faceOk: (f: number, w: number, it: boolean) => boolean = () => true
 export function randomStyle(f?: number): Style {
@@ -62,10 +71,10 @@ export function randomStyle(f?: number): Style {
     const face = FACES[ff]
     const w = pick(face.weights)
     const it = face.italic && Math.random() < 0.3
-    if (!faceOk(ff, w, it)) continue
+    if (!faceOk(ff, w, it) || !FACE_ON.has(ff)) continue
     return { f: ff, w, it, up: face.caps || Math.random() < 0.7, sc: rnd(0.72, 1.32), col: randomCol() }
   }
-  return { ...HOME, sc: rnd(0.72, 1.32), col: randomCol() }
+  return FACE_ON.size ? { ...HOME, sc: rnd(0.72, 1.32), col: randomCol() } : { ...HOME }
 }
 
 // ---- canvas -----------------------------------------------------------------------------------
@@ -308,7 +317,16 @@ export class Letter {
     const sp = this.sprite()
     return { x: this.hx + this.ox + (sp.adv * this.s) / 2, y: this.hy + this.oy - (sp.asc * this.s) / 2 }
   }
+  turn = -1 // (smooth swaps) seconds into the turn that hides the swap; -1: none
+  turnA = 0 // its angle now
+  next: Style | null = null
   restyle(st: Style): void {
+    if (SMOOTH) {
+      // turned edge-on, swapped there, turned back (see stepTurns)
+      this.next = st
+      if (this.turn < 0) this.turn = 0
+      return
+    }
     this.style = st
     this.pop = 1
   }
@@ -317,7 +335,7 @@ export const letters = [...'GENERIC.'].map((ch, i) => new Letter(ch, i))
 const isHome = (s: Style) => s.f === HOME.f && s.w === HOME.w && s.it === HOME.it && s.up === HOME.up && s.sc === HOME.sc && s.col === null
 
 // ---- the cursor -------------------------------------------------------------------------------
-export const m = { x: -1e4, y: -1e4, px: -1e4, py: -1e4, vx: 0, vy: 0, speed: 0, on: false }
+export const m = { x: -1e4, y: -1e4, px: -1e4, py: -1e4, vx: 0, vy: 0, speed: 0, on: false, down: false, clicks: 0 }
 addEventListener('pointermove', (e) => {
   m.x = e.clientX
   m.y = e.clientY
@@ -331,7 +349,18 @@ addEventListener('pointerdown', (e) => {
   m.x = m.px = e.clientX
   m.y = m.py = e.clientY
   m.on = true
+  m.down = true
+  m.clicks++ // (a click shorter than a frame still counts)
 })
+for (const ev of ['pointerup', 'pointercancel'])
+  addEventListener(ev, (e) => {
+    m.down = false
+    // a finger lifted leaves no cursor behind
+    if ((e as PointerEvent).pointerType === 'touch') {
+      m.on = false
+      m.x = m.y = -1e4
+    }
+  })
 document.documentElement.addEventListener('pointerleave', () => {
   m.on = false
   m.x = m.y = -1e4
@@ -353,6 +382,7 @@ export interface Hover {
   order?(): Letter[]
   title?: string // shown top right (second set)
   paint?(l: Letter): boolean // draws the letter itself instead of the sprite; false = draw as usual
+  sticky?(): boolean // keep the hover on though the cursor is off the sign (a letter still in flight)
 }
 export let time = 0
 
@@ -1214,6 +1244,9 @@ function grid(): Hover {
   }
 }
 
+/** no hover at all (/hero-hovers-fontes.html: only the letters changing font) */
+export const NO_HOVER: Record<string, () => Hover> = { fontes: () => ({ name: 'fontes', title: 'fontes', update() {} }) }
+
 export const SET_A: Record<string, () => Hover> = { inspect, easings, charcode, gravity, string, fout, breakpoint, flee, wave, orbit, kerning, zindex, float, grid }
 let PIN = Q.get('hover')
 const SWITCH = Number(Q.get('troca')) || 3.5
@@ -1236,10 +1269,36 @@ export interface LabHero {
   beforeDoorRender?: () => void
   afterDoorRender?: () => void
   setWordVisible(v: boolean): void
+  relayoutSign?(): void
   labHost(): GizHost
+  labReleased?(): boolean
 }
 type THREE_Object3D = import('three').Object3D
 let HERO: LabHero | null = null
+let lastFront = NaN
+
+/** where /hero-hovers-giz.html draws the sign at rest in a W×H frame: one em (px, as its letters are
+ *  drawn: rounded), the word's pen origin (centred by its advances) and "We are"'s — the same sums
+ *  resize(), lineLayout() and placeWeAre() do */
+export function labPlace(W: number, H: number): { em: number; left: number; base: number; weLeft: number; weBase: number } {
+  meas.font = `700 100px Tinos`
+  const w1 = meas.measureText('GENERIC.').width / 100
+  const s = Math.min((W * 0.72) / w1, H * 0.3)
+  const base = H * 0.5 + s * 0.32
+  const em = Math.max(8, Math.round(s))
+  meas.font = `700 ${em}px Tinos`
+  let total = 0
+  let asc = 0
+  for (const [k, ch] of [...'GENERIC.'].entries()) {
+    const mt = meas.measureText(ch)
+    total += mt.width
+    if (k < 4) asc = Math.max(asc, mt.actualBoundingBoxAscent)
+  }
+  const left = W / 2 - total / 2
+  meas.font = `700 ${s}px Tinos`
+  const glsb = -meas.measureText('G').actualBoundingBoxLeft
+  return { em, left, base, weLeft: left + glsb + 0.03 * 0.72 * s, weBase: base - asc - 0.16 * 0.72 * s }
+}
 let paperCv: HTMLCanvasElement | null = null
 /** (in the hero) the lab's paper — the same fill and grain it draws on its own page — handed to the
  *  hero as its ground, so the cubes' faces are this paper */
@@ -1258,6 +1317,29 @@ function paintPaper(): void {
 let LEFT = NaN // the hero's pen origin for the word (px), when embedded // the sign at the main hero's size (instead of 72% of the width)
 const THREE_DEG25 = (25 * Math.PI) / 180 // half the door camera's field of view
 let PICKER = false
+/** (/hero-hovers-mobile.html) on a touch screen: the hovers switch on their own, no touch needed; the
+ *  finger dragged over the sign is the cursor; the phone's tilt sags the letters and the loose ones
+ *  slide toward the low side; turning the phone sideways (or back) drops the letters to the new floor,
+ *  and they put themselves back together */
+let MOBILE = false
+/** (/hero-hovers-giz-cubos.html) inside the hero but laid out exactly as /hero-hovers-giz.html: the lab
+ *  keeps its own size and place (the hero builds its sign there, see labPlace), its own "We are" */
+let EXACT = false
+export const TOUCH = matchMedia('(hover: none) and (pointer: coarse)').matches
+let pendingDrop: { cs: { x: number; y: number }[]; W0: number; H0: number } | null = null
+let dropArm = false
+let dropT = -1
+const dropSpin = letters.map(() => ({ w: 0 }))
+/** smoother swaps (/hero-hovers-suave.html): a letter changes style by turning edge-on about its
+ *  upright, swapping there and turning back, its height kept across the swap and eased to the new */
+let SMOOTH = false
+let FONT_PICKER = false
+let PICK_GROUPS: [string, string[]][] | null = null
+/** more picker sections: (title, [label, is on, do]) */
+export type PickButton = [string, () => boolean, () => void]
+let EXTRA: [string, PickButton[]][] = []
+/** keep the hover on with no cursor at all (the pixels' test page, while it replays on its own) */
+let ALWAYS: () => boolean = () => false // the picker's sections (title, hover names)
 // the main hero's chalk sign over the 2D canvas (GizSign.ts): "GENERIC." while at rest, "We are" always
 let giz: GizSign | null = null
 let resting = true
@@ -1327,6 +1409,9 @@ function lineLayout(): Spot[] {
 }
 
 function resize(): void {
+  if (MOBILE && W > 0 && W > H !== innerWidth > innerHeight) {
+    pendingDrop = { cs: letters.map((l) => l.center()), W0: W, H0: H }
+  }
   W = innerWidth
   H = innerHeight
   cv.width = Math.round(W * DPR)
@@ -1360,7 +1445,7 @@ function resize(): void {
 
 function restyleLetters(dt: number): void {
   if (LETRAS === 'off') return
-  const rate = LETRAS === 'sempre' ? (hovered ? 0.9 : 0.22) : hovered ? 0.9 : 0
+  const rate = MOBILE && TOUCH ? (m.on ? 0.9 : 0.35) : LETRAS === 'sempre' ? (hovered ? 0.9 : 0.22) : hovered ? 0.9 : 0
   for (const l of letters) {
     if (rate && Math.random() < rate * dt) l.restyle(randomStyle())
     else if (LETRAS === 'hover' && !hovered && !isHome(l.style) && Math.random() < 2.5 * dt) l.restyle({ ...HOME })
@@ -1372,7 +1457,12 @@ function restyleLetters(dt: number): void {
 function followHero(): boolean {
   if (!HERO) return true
   const f = HERO.labFrame
-  if (f && (f.S !== S || f.base !== BASE || f.left !== LEFT)) {
+  if (EXACT && f && g3 && lastFront !== f.frontZ) {
+    lastFront = f.frontZ
+    g3.setFrontZ(f.frontZ)
+    g3.resize(W, H)
+  }
+  if (!EXACT && f && (f.S !== S || f.base !== BASE || f.left !== LEFT)) {
     S = f.S
     BASE = f.base
     LEFT = f.left
@@ -1382,6 +1472,7 @@ function followHero(): boolean {
     g3?.setFrontZ(f.frontZ)
     g3?.resize(W, H)
     for (const l of letters) l.placed = false
+    if (pendingDrop) dropArm = true
   }
   if (g3 && f) {
     // (cheap, and the hero rebuilds its sign on resize) its sign in the lab's look, the walls on its
@@ -1390,7 +1481,7 @@ function followHero(): boolean {
     g3.adopt(wm, wm.slice(2)) // (after the two halves of "GENERIC.": "We are", never cut)
     const lv = HERO.labLeaves()
     g3.setLeaves(lv.L, lv.R, lv.vw, lv.vh)
-    g3.setWe(f.we)
+    if (!EXACT) g3.setWe(f.we)
   }
   const shut = HERO.labDoorsShut && !!f && !!g3?.ready
   if (!shut) {
@@ -1401,6 +1492,9 @@ function followHero(): boolean {
       l.ox = l.oy = l.vx = l.vy = l.rot = l.rv = l.g = l.pop = 0
       l.s = 1
       l.free = l.kin = l.tofu = l.flip = false
+      l.turn = -1
+      l.turnA = 0
+      l.next = null
       l.show = null
       l.showFace = null
       l.fat = 0
@@ -1410,6 +1504,116 @@ function followHero(): boolean {
   HERO.setWordVisible(!shut)
   cv.style.visibility = shut ? 'visible' : 'hidden' // (the overlays and the test label go with the lab)
   return shut
+}
+
+/** (mobile) a swipe that starts off the sign scrolls the hero (as the wheel does); one on the sign is
+ *  the cursor — the page doesn't pan under it */
+function mountTouch(): void {
+  let y0 = 0
+  let onSign = false
+  let id = -1
+  addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return
+    id = e.pointerId
+    y0 = e.clientY
+    onSign = overSign()
+  })
+  addEventListener('pointermove', (e) => {
+    if (e.pointerType !== 'touch' || e.pointerId !== id || onSign) return
+    const dy = e.clientY - y0
+    y0 = e.clientY
+    const released = !!HERO?.labReleased?.()
+    // the hero's own scroll before it lets go; after, the page's (at the top, a pull down goes back)
+    if (!released || (scrollY <= 0 && dy > 0)) dispatchEvent(new WheelEvent('wheel', { deltaY: -dy * 2.2 }))
+  })
+  const block = (e: TouchEvent) => {
+    if (!HERO?.labReleased?.() || onSign) e.preventDefault()
+  }
+  addEventListener('touchmove', block, { passive: false })
+}
+
+/** the screen turned: every letter where it was (scaled into the new frame), loose, falling */
+function startDrop(): void {
+  const d = pendingDrop!
+  pendingDrop = null
+  dropArm = false
+  if (mode) setMode(null)
+  hovered = false
+  dropT = 0
+  for (const l of letters) {
+    const c = d.cs[l.i]
+    const sp = l.sprite()
+    l.ox = (c.x / d.W0) * W - (l.hx + (sp.adv * l.s) / 2)
+    l.oy = (c.y / d.H0) * H - (l.hy - (sp.asc * l.s) / 2)
+    l.free = true
+    l.kin = false
+    l.vx = (Math.random() - 0.5) * 300
+    l.vy = -Math.random() * 200
+    dropSpin[l.i].w = (Math.random() - 0.5) * 4
+  }
+}
+function stepDrop(dt: number): void {
+  dropT += dt
+  const floor = H - Math.max(24, H * 0.06)
+  for (const l of letters) {
+    if (!l.free) continue
+    l.vy += 2600 * dt
+    l.vx += TILT.x * 900 * dt
+    l.ox += l.vx * dt
+    l.oy += l.vy * dt
+    const sp = l.sprite()
+    const hh = ((sp.asc + sp.desc) * l.s) / 2
+    const hw = (sp.adv * l.s) / 2
+    const c = l.center()
+    if (c.y + hh > floor) {
+      l.oy -= c.y + hh - floor
+      if (l.vy > 0) l.vy *= -0.32
+      l.vx *= 0.9
+      // rolls along the floor
+      dropSpin[l.i].w = l.vx / Math.max(hw, 1)
+    }
+    if (c.x - hw < 0) (l.ox += hw - c.x), (l.vx = Math.abs(l.vx) * 0.5)
+    if (c.x + hw > W) (l.ox -= c.x + hw - W), (l.vx = -Math.abs(l.vx) * 0.5)
+    l.rot += dropSpin[l.i].w * dt * 0.35
+  }
+  if (dropT > 1.25) {
+    // back together: the springs bring them home, the turns unwound
+    for (const l of letters) {
+      l.free = false
+      l.rot = Math.atan2(Math.sin(l.rot), Math.cos(l.rot))
+      l.vx *= 0.2
+      l.vy *= 0.2
+    }
+    dropT = -1
+  }
+}
+
+const TURN = 0.46 // s, a whole smooth swap
+function stepTurns(dt: number): void {
+  for (const l of letters) {
+    if (l.turn < 0) continue
+    l.turn += dt
+    const u = Math.min(1, l.turn / TURN)
+    if (u >= 0.5 && l.next) {
+      // edge-on: the swap, the letter's height carried over (then eased to its own size)
+      const a0 = l.ink().asc * l.s
+      l.style = l.next
+      l.next = null
+      const a1 = l.ink().asc
+      if (a1 > 0) l.s = a0 / a1
+    }
+    const e = u < 0.5 ? (u * 2) ** 2 : 1 - (1 - (u - 0.5) * 2) ** 2
+    l.turnA = u < 0.5 ? (Math.PI / 2) * e : -(Math.PI / 2) * (1 - e)
+    if (u >= 1) {
+      l.turnA = 0
+      // another swap asked for meanwhile: go again
+      l.turn = l.next ? 0 : -1
+    }
+    if (l.turnA) {
+      const t = l.fx.tilt
+      l.fx.tilt = { x: t?.x ?? 0, y: (t?.y ?? 0) + l.turnA, pivot: t?.pivot ?? 'center' }
+    }
+  }
 }
 
 function frame(dt: number): void {
@@ -1428,7 +1632,7 @@ function frame(dt: number): void {
   m.px = m.x
   m.py = m.y
 
-  const over = live && overSign()
+  const over = live && dropT < 0 && (overSign() || !!mode?.sticky?.() || (MOBILE && TOUCH) || ALWAYS())
   if (over) {
     away = 0
     if (!hovered) {
@@ -1456,6 +1660,13 @@ function frame(dt: number): void {
     l.c = 15
   }
   mode?.update(dt)
+  if (SMOOTH) stepTurns(dt)
+  if (MOBILE && TILT.on)
+    for (const l of letters) {
+      // the low side pulls: every letter sags a little that way
+      l.tx += TILT.x * 0.12 * S
+      l.ty += TILT.y * 0.12 * S
+    }
 
   // layout: gaps, then homes
   const gr = mode?.gapRate ?? 10
@@ -1471,7 +1682,7 @@ function frame(dt: number): void {
     l.hx += (sp.x - l.hx) * ease(dt, 12)
     l.hy += (sp.y - l.hy) * ease(dt, 12)
     l.layS = sp.s
-    l.s += (l.layS * l.modeS - l.s) * ease(dt, 12)
+    l.s += (l.layS * l.modeS - l.s) * ease(dt, SMOOTH ? 4.5 : 12)
     if (l.modeS < 1) l.s = Math.min(l.s, l.layS * l.modeS) // a longer text shrinks at once, no giant frame
     l.pop *= 1 - ease(dt, 9)
     if (l.free || l.kin) continue
@@ -1488,6 +1699,8 @@ function frame(dt: number): void {
       l.rot += l.rv * h
     }
   }
+  if (dropArm && pendingDrop) startDrop()
+  if (dropT >= 0) stepDrop(dt)
   placeWeAre(dt)
   resting = !hovered && (resting || atRest())
   draw()
@@ -1497,9 +1710,10 @@ function frame(dt: number): void {
       dt,
       letters.map((l) => {
         const sp = l.sprite()
-        return { font: fontKey(l.style.f, l.style.w, l.style.it), text: l.text(), px: l.px(), cx: l.hx + l.ox + (sp.adv * l.s) / 2, cy: l.hy + l.oy - (sp.asc * l.s) / 2, adv: sp.adv, asc: sp.asc, rot: l.rot, scale: l.s * (1 + 0.14 * l.pop), fx: l.fx }
+        const st = l.style
+        return { css: (px: number) => `${pre(st)} ${px}px "${FACES[st.f].fam}"`, font: fontKey(l.style.f, l.style.w, l.style.it), text: l.text(), px: l.px(), cx: l.hx + l.ox + (sp.adv * l.s) / 2, cy: l.hy + l.oy - (sp.asc * l.s) / 2, adv: sp.adv, asc: sp.asc, rot: l.rot, scale: l.s * (1 + 0.14 * l.pop), fx: l.fx }
       }),
-      HERO?.labFrame?.we ? { x: weX() - weRest().x, y: weY - weRest().y, S } : { x: weX(), y: weY, S },
+      !EXACT && HERO?.labFrame?.we ? { x: weX() - weRest().x, y: weY - weRest().y, S } : { x: weX(), y: weY, S },
     )
 }
 
@@ -1595,9 +1809,10 @@ function draw(): void {
 
 /** a list on the right to pick the hover (and how the letters behave) instead of the random switching */
 function mountPicker(): void {
-  const css = 'font:500 12px/1.2 "IBM Plex Mono",Consolas,monospace;letter-spacing:.02em;text-align:left;padding:4px 9px;border:1px solid rgba(18,18,18,.25);background:rgba(239,238,231,.92);color:#121212;cursor:pointer'
+  const css = 'font:500 11px/1.2 "IBM Plex Mono",Consolas,monospace;letter-spacing:.02em;text-align:left;padding:3px 7px;border:1px solid rgba(18,18,18,.25);background:rgba(239,238,231,.92);color:#121212;cursor:pointer'
   const box = document.createElement('div')
-  box.setAttribute('style', 'position:fixed;top:14px;right:14px;z-index:10;display:flex;flex-direction:column;gap:2px;max-height:calc(100vh - 28px);overflow:auto')
+  // a bar across the top, clear of the sign (it spans nearly the whole width)
+  box.setAttribute('style', 'position:fixed;top:10px;left:14px;right:14px;z-index:10;display:flex;flex-wrap:wrap;align-items:center;gap:3px 3px')
   const all: [HTMLButtonElement, () => boolean][] = []
   const paint = () => {
     for (const [b, on] of all) {
@@ -1619,36 +1834,79 @@ function mountPicker(): void {
   }
   const head = (text: string) => {
     const h = document.createElement('div')
-    h.setAttribute('style', 'font:500 10px/1 "IBM Plex Mono",Consolas,monospace;letter-spacing:.12em;text-transform:uppercase;opacity:.5;margin:8px 0 2px')
+    h.setAttribute('style', 'font:500 10px/1 "IBM Plex Mono",Consolas,monospace;letter-spacing:.12em;text-transform:uppercase;opacity:.5;margin:0 4px 0 10px')
     h.textContent = text
     box.appendChild(h)
   }
-  head('hover')
-  for (const [name, make] of Object.entries(ALL)) {
-    add(make().title ?? name, () => PIN === name, () => {
-      PIN = name
-      if (mode) setMode(nextMode())
+  /** the letters in a face just turned off take another (or go home) */
+  const refit = () => {
+    for (const l of letters) if (!FACE_ON.has(l.style.f) || (FACE_ON.size === 0 && !isHome(l.style))) l.restyle(FACE_ON.size ? randomStyle() : { ...HOME })
+  }
+  for (const [title, names] of PICK_GROUPS ?? [['hover', Object.keys(ALL)] as [string, string[]]]) {
+    head(title)
+    for (const name of names) {
+      const make = ALL[name]
+      if (!make) continue
+      add(make().title ?? name, () => PIN === name, () => {
+        PIN = name
+        if (mode) setMode(nextMode())
+      })
+    }
+  }
+  if (FONT_PICKER) {
+    head('fontes')
+    FACES.forEach((f, i) => {
+      if (i === BASE_FACES) head('candidatas')
+      add(f.fam, () => FACE_ON.has(i), () => {
+        if (FACE_ON.has(i)) FACE_ON.delete(i)
+        else FACE_ON.add(i)
+        refit()
+      })
+      const b = all[all.length - 1][0]
+      b.style.fontFamily = `"${f.fam}"`
+      b.style.fontSize = '13px'
     })
+    add('todas', () => FACE_ON.size === FACES.length, () => {
+      FACES.forEach((_, i) => FACE_ON.add(i))
+    })
+    add('nenhuma', () => FACE_ON.size === 0, () => {
+      FACE_ON.clear()
+      refit()
+    })
+  }
+  for (const [title, buttons] of EXTRA) {
+    head(title)
+    for (const [label, on, act] of buttons) add(label, on, act)
   }
   head('letras')
   for (const [v, t] of [['hover', 'só no hover'], ['sempre', 'o tempo todo'], ['off', 'desligado']] as [Letras, string][]) add(t, () => LETRAS === v, () => (LETRAS = v))
-  head('cor')
-  for (const [v, t] of [['off', 'sem cor'], ['bootstrap', 'bootstrap'], ['css', 'css named colors']] as [Cor, string][])
-    add(t, () => COR === v, () => {
-      COR = v
-      // the letters already in a colour take one from the new palette (or lose it)
-      for (const l of letters) if (l.style.col) l.restyle({ ...l.style, col: v === 'off' ? null : pick(PALETTES[v]) })
-    })
-  head('acabamento')
-  for (const [v, t] of [['cheio', 'preenchido'], ['lapis', 'lápis colorido']] as [Look, string][]) add(t, () => LOOK === v, () => (LOOK = v))
   document.body.appendChild(box)
   paint()
 }
 
 /** run the lab with one set of hovers. `corner`: the hover's name top right; `picker`: choose the
  *  hover from a list (no random switching) */
-export async function startHoverLab(set: Record<string, () => Hover>, opts: { corner?: boolean; picker?: boolean; giz?: boolean; giz3d?: boolean; mainSize?: boolean; hero?: LabHero } = {}): Promise<void> {
+export async function startHoverLab(set: Record<string, () => Hover>, opts: { corner?: boolean; picker?: boolean; pickGroups?: [string, string[]][]; extraButtons?: [string, PickButton[]][]; always?: () => boolean; fontPicker?: boolean; trialFaces?: boolean; smooth?: boolean; mobile?: boolean; exact?: boolean; letras?: Letras; giz?: boolean; giz3d?: boolean; mainSize?: boolean; hero?: LabHero } = {}): Promise<void> {
   ALL = set
+  SMOOTH = !!opts.smooth
+  EXACT = !!opts.exact
+  MOBILE = !!opts.mobile
+  if (MOBILE) {
+    startTilt()
+    mountTouch()
+  }
+  if (opts.trialFaces) {
+    BASE_FACES = FACES.length
+    for (const f of TRIAL_FACES) {
+      FACE_ON.add(FACES.length)
+      FACES.push(f)
+    }
+  }
+  FONT_PICKER = !!opts.fontPicker
+  if (opts.letras && !Q.get('letras')) LETRAS = opts.letras
+  PICK_GROUPS = opts.pickGroups ?? null
+  EXTRA = opts.extraButtons ?? []
+  if (opts.always) ALWAYS = opts.always
   MAIN_SIZE = !!opts.mainSize
   if (opts.hero) {
     HERO = opts.hero
@@ -1694,6 +1952,7 @@ export async function startHoverLab(set: Record<string, () => Hover>, opts: { co
   HATCH = hatchPattern()
   GRAIN = grainPattern()
   resize()
+  if (HERO && EXACT) HERO.relayoutSign?.()
   addEventListener('resize', resize)
   let prev = performance.now()
   const tick = (now: number) => {

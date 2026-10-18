@@ -189,6 +189,9 @@ const WORM_STREAK_SPEED = 55 // base z advance, scaled up by charge/fall
  *  straight cut, matte black — /hero-letters) */
 export type SignStyle = 'classic' | 'matte'
 
+/** where the lab wants the sign: one em (px), the word's pen origin (left, baseline) and "We are"'s */
+export type SignPlace = (W: number, H: number) => { em: number; left: number; base: number; weLeft: number; weBase: number }
+
 export class ShaderHero {
   private renderer: THREE.WebGLRenderer
   private camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
@@ -396,7 +399,14 @@ export class ShaderHero {
   // while the doors are shut; the hero's own one-piece sign comes back the moment they move
   private signLab = false
   private noReveal = false
-  private weAreHigh = false // "We are" still, but at the height the dodging one sits (the main page's)
+  private weAreHigh = false
+  /** (/hero-hovers-giz-cubos.html) where the sign stands, from the lab: the word and "We are" exactly
+   *  where /hero-hovers-giz.html draws them */
+  private signPlace?: SignPlace
+  /** (lab) build the sign again (the lab's fonts are in: its placement is final) */
+  relayoutSign(): void {
+    this.layoutLetters()
+  } // "We are" still, but at the height the dodging one sits (the main page's)
   private wordMeshes: THREE.Mesh[] = [] // "GENERIC." (and the still "We are", which the lab draws too)
   /** where the sign sits at rest, for the lab: font size (px), baseline and pen origin (px, the
    *  visible frame), and the letters' front plane (world z) */
@@ -441,6 +451,10 @@ export class ShaderHero {
       // the cursor's holes cut the lab's letters too (unless this page has none)
       reveal: this.noReveal ? undefined : { glsl: REVEAL_GLSL, uniforms: this.reveal.uniforms as unknown as Record<string, THREE.IUniform>, restOn: this.restOn, restVP: this.restVP },
     }
+  }
+  /** (lab) the page has let go of the hero and scrolls on its own */
+  labReleased(): boolean {
+    return this.released
   }
   setWordVisible(v: boolean): void {
     for (const m of this.wordMeshes) m.visible = v
@@ -499,7 +513,7 @@ export class ShaderHero {
   private approachBg?: THREE.Mesh
   private approachBgMat?: THREE.ShaderMaterial
 
-  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number; tunnelReveal?: boolean; behind?: 'paper'; paperDirect?: boolean; paperPose?: number[]; scrollAfter?: boolean; signLab?: boolean; noReveal?: boolean; weAreHigh?: boolean; secretObjects?: { name: string; x: number; y: number; size: number; rot?: number }[] } = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number; tunnelReveal?: boolean; behind?: 'paper'; paperDirect?: boolean; paperPose?: number[]; scrollAfter?: boolean; signLab?: boolean; noReveal?: boolean; weAreHigh?: boolean; signPlace?: SignPlace; secretObjects?: { name: string; x: number; y: number; size: number; rot?: number }[] } = {}) {
     this.canvas = canvas
     // Size to the canvas's own laid-out box — and pass the RAW fractional size to
     // setSize. Rounding it here makes the backing store a pixel short of the box,
@@ -605,6 +619,7 @@ export class ShaderHero {
     this.weAreDodge = !!opts.weAreDodge
     this.signLab = !!opts.signLab
     this.weAreHigh = !!opts.weAreHigh
+    this.signPlace = opts.signPlace
     this.noReveal = !!opts.noReveal
     this.sign = opts.sign ?? 'classic'
     this.wormTo = opts.wormTo
@@ -2220,7 +2235,13 @@ export class ShaderHero {
     probe.computeBoundingBox()
     const w1 = probe.boundingBox!.max.x - probe.boundingBox!.min.x
     probe.dispose()
-    const size = targetW / w1
+    const place = this.signPlace?.(this.W, this.H)
+    let size = targetW / w1
+    if (place) {
+      // one em of `place.em` px on the letters' front plane, which sits a letter's depth (∝ size) out
+      const k = (place.em * 0.72 * 2 * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))) / this.H
+      size = (k * (DOOR_CAM_Z - 0.015)) / (1 + k * LETTER_DEPTH)
+    }
     const shape = this.signShape(size)
     const depth = shape.depth
     const bevel = shape.bevelEnabled ? shape.bevelThickness : 0
@@ -2239,14 +2260,21 @@ export class ShaderHero {
     const [gl, gr] = this.bisect(geo)
     geo.dispose()
 
-    const yOff = vh * 0.03
+    let yOff = vh * 0.03
+    let xOff = 0
     const zOff = 0.015
+    const uppFront = (2 * (DOOR_CAM_Z - (zOff + depth + bevel)) * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))) / this.H
+    if (place) {
+      // the word's pen origin on the lab's baseline-left
+      yOff = (this.H / 2 - place.base) * uppFront + centre.y
+      xOff = (place.left - this.W / 2) * uppFront + centre.x
+    }
     if (this.letterSwap) this.layoutLetterSwap(size, centre, yOff, zOff + depth + bevel)
     const meshL = new THREE.Mesh(gl, this.letterMat)
-    meshL.position.set(vw / 2, yOff, zOff)
+    meshL.position.set(vw / 2 + xOff, yOff, zOff)
     this.lettersL.add(meshL)
     const meshR = new THREE.Mesh(gr, this.letterMat)
-    meshR.position.set(-vw / 2, yOff, zOff)
+    meshR.position.set(-vw / 2 + xOff, yOff, zOff)
     this.lettersR.add(meshR)
     this.signMeshes.push(meshL, meshR)
     this.wordMeshes = [meshL, meshR]
@@ -2254,7 +2282,7 @@ export class ShaderHero {
       // at rest the lockup's ink centre sits on (0, yOff); TextGeometry's size is 0.72 em
       const frontZ = zOff + depth + bevel
       const upp = (2 * (DOOR_CAM_Z - frontZ) * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))) / this.H
-      this.labFrame = { S: size / 0.72 / upp, base: this.H / 2 - (yOff - centre.y) / upp, left: this.W / 2 - centre.x / upp, frontZ, weLeft: NaN, weBase: NaN, we: null }
+      this.labFrame = { S: size / 0.72 / upp, base: this.H / 2 - (yOff - centre.y) / upp, left: this.W / 2 + (xOff - centre.x) / upp, frontZ, weLeft: NaN, weBase: NaN, we: null }
       this.setWordVisible(!this.labDoorsShut)
     }
     this.pinRest(meshL)
@@ -2304,6 +2332,10 @@ export class ShaderHero {
     } else {
       const we = new THREE.Mesh(weGeo, this.letterMat)
       we.position.set(weX, weY, zOff)
+      if (place) {
+        // its pen origin where the lab puts it, its front face on the word's front plane
+        we.position.set((place.weLeft - this.W / 2) * uppFront + vw / 2 + wb.min.x, (this.H / 2 - place.weBase) * uppFront + wb.min.y, zOff + depth + bevel - weSize * 0.16)
+      }
       this.lettersL.add(we)
       this.signMeshes.push(we)
       if (this.signLab && this.labFrame) {

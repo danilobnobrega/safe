@@ -1,6 +1,7 @@
 // TEST (/hero-hovers-2.html): the hover lab's second set — every idea from the lists that wasn't in
 // the first one. Same engine (HoverLab.ts); the hover's name shows top right.
 import { ShapeUtils, Vector2 } from 'three'
+import { TILT } from '../ui/tilt'
 import {
   type Hover,
   type Letter,
@@ -637,6 +638,8 @@ function billiards(ball = true): Hover {
         }
       for (const l of letters) {
         if (!l.free) continue
+        l.vx += TILT.x * 1400 * dt // (mobile) the low side pulls
+        l.vy += TILT.y * 1400 * dt
         const f = Math.exp(-dt * 1.1)
         l.vx *= f
         l.vy *= f

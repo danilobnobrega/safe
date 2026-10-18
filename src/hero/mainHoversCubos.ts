@@ -7,7 +7,7 @@ import './hero.css'
 import { ShaderHero } from './ShaderHero'
 import { mountCookieBanner } from '../ui/cookieBanner'
 import { startHoverLab } from './HoverLab'
-import { GIZ_SET } from './HoverLabGiz'
+import { CUBOS_SET } from './HoverLabFun'
 
 const canvas = document.querySelector<HTMLCanvasElement>('#webgl')
 if (!canvas) throw new Error('no #webgl canvas')
@@ -26,4 +26,5 @@ const hero = new ShaderHero(canvas, {
   noReveal: true, // the hovers instead of the liquid holes
 })
 mountCookieBanner(hero.crumbs, () => hero.unlock())
-void startHoverLab(GIZ_SET, { hero })
+// the hovers: grid, gravity and spacing swapped for split-flap, whirlwind and jelly (2026-10-18)
+void startHoverLab(CUBOS_SET, { hero })

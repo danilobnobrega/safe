@@ -3,9 +3,9 @@
 // wireframe (the mesh the GPU really draws), progressive loading (rendered at a low resolution:
 // pixels, then blur) and the font roulette (two glyphs on a reel, clipped to a window).
 import * as THREE from 'three'
-import { fontKey } from './GizLetters'
+import { PIX, fontKey } from './GizLetters'
 import { KEEP_B } from './HoverLabMore'
-import { type Hover, type Letter, SET_A, FACES, INK, ORANGE, PAPER, S, bake, beginLetter, clamp, dist, g3, label, letters, m, pre, randomStyle, rnd, time, toLocal, toScreen, ctx } from './HoverLab'
+import { type Hover, type Letter, SET_A, FACES, INK, ORANGE, PAPER, S, bake, clamp, dist, g3, label, letters, m, pre, randomStyle, rnd, toLocal, toScreen, ctx } from './HoverLab'
 
 const near = (l: Letter, reach: number) => clamp(1 - dist(l.center()) / reach, 0, 1)
 const keyOf = (l: Letter) => fontKey(l.style.f, l.style.w, l.style.it)
@@ -234,64 +234,88 @@ function wireframe(): Hover {
   }
 }
 
-// 3 · progressive loading: touch a letter and it reloads — a skeleton, then drawn at a few pixels
-// and up, then blurred, then sharp
-function progressive(): Hover {
-  const p = new Float32Array(letters.length).fill(1)
+// 3 · progressive loading: touch a letter and it loads again like a picture on a slow line — gone a
+// beat, then scan after scan sweeping down it in big, plain pixels, each scan finer than the last; and
+// only at the very end the blur, a short soft focus from the finest pixels to the sharp letter (the
+// blur hides the last step, it doesn't stand in for the pixels)
+/** how the progressive load goes (/hero-hovers-pixels.html changes it live) */
+export const PROG = {
+  scans: [0.1, 0.05, 0.026], // block size per scan, × the font size
+  scanT: 0.42, // s a scan takes to sweep down the letter
+  focusT: 0.3, // s of the closing soft focus (0: none)
+  auto: false, // every letter loads again on its own, staggered, over and over
+}
+export function progressive(name = 'progressive', title = 'carregamento progressivo', mode?: number): Hover {
+  const t = new Float32Array(letters.length).fill(-1)
   const cool = new Float32Array(letters.length)
+  const WAIT = 0.14
+  let SCANS = PROG.scans
+  let SCAN_T = PROG.scanT
+  let FOCUS_T = PROG.focusT
+  let total = 0
+  let clock = 0
   return {
-    name: 'progressive',
-    title: 'carregamento progressivo',
+    name,
+    title,
+    sticky: () => PROG.auto,
+    enter() {
+      if (mode !== undefined) PIX.mode = mode
+    },
     exit() {
-      p.fill(1)
+      t.fill(-1)
     },
     update(dt) {
+      SCANS = PROG.scans
+      SCAN_T = PROG.scanT
+      FOCUS_T = PROG.focusT
+      total = WAIT + SCANS.length * SCAN_T + FOCUS_T
+      clock += dt
       for (const l of letters) {
         const i = l.i
         cool[i] -= dt
-        if (p[i] < 1) {
-          p[i] = Math.min(1, p[i] + dt / 1.5)
-          if (p[i] >= 1) {
-            l.pop = 0.6
-            cool[i] = 1
-          }
-        } else if (cool[i] <= 0 && dist(l.center()) < 0.6 * S) p[i] = 0
-        const t = p[i]
-        if (t >= 1) continue
-        if (t < 0.22) l.fx.hide = true
-        else if (t < 0.55) l.fx.pixel = { block: Math.max(2, (0.16 - 0.12 * ((t - 0.22) / 0.33)) * S), smooth: false }
-        else {
-          const b = (1 - (t - 0.55) / 0.45) * 0.07 * S
-          if (b > 1.2) l.fx.pixel = { block: b, smooth: true }
+        if (t[i] < 0) {
+          const autoGo = PROG.auto && (clock - i * 0.12) % (total + 1.4) < dt && clock - i * 0.12 > 0
+          if (autoGo || (cool[i] <= 0 && dist(l.center()) < 0.6 * S)) t[i] = 0
+          else continue
         }
-      }
-    },
-    under() {
-      // the skeleton, where the letter will be
-      for (const l of letters) {
-        if (p[l.i] >= 0.22) continue
-        const sp = beginLetter(l)
-        ctx.fillStyle = INK
-        ctx.globalAlpha = 0.07
-        ctx.beginPath()
-        ctx.roundRect(0, -sp.asc, sp.adv, sp.asc + sp.desc, 8 / l.s)
-        ctx.fill()
-        const u = (time * 1.4) % 1
-        const gr = ctx.createLinearGradient(-sp.adv + u * sp.adv * 3, 0, u * sp.adv * 3, 0)
-        gr.addColorStop(0, 'rgba(255,255,255,0)')
-        gr.addColorStop(0.5, 'rgba(255,255,255,.55)')
-        gr.addColorStop(1, 'rgba(255,255,255,0)')
-        ctx.globalAlpha = 1
-        ctx.fillStyle = gr
-        ctx.fill()
-        ctx.restore()
+        t[i] += dt
+        if (t[i] >= total) {
+          t[i] = -1
+          cool[i] = 0.8
+          continue
+        }
+        const k0 = t[i] - WAIT // a beat of nothing first: the request
+        if (k0 < 0) {
+          l.fx.hide = true
+          continue
+        }
+        const px = l.px()
+        const scanned = SCANS.length * SCAN_T
+        if (k0 < scanned) {
+          const k = Math.floor(k0 / SCAN_T)
+          const f = (k0 - k * SCAN_T) / SCAN_T
+          const sp = l.sprite()
+          const top = l.hy + l.oy - sp.asc * l.s * 1.2
+          const bot = l.hy + l.oy + sp.desc * l.s + 0.06 * S
+          const e = f * f * (3 - 2 * f) // the sweep eases in and out
+          if (PIX.mode >= 6) l.fx.voxel = { block: k === 0 ? -1 : SCANS[k - 1], fine: SCANS[k], split: top + (bot - top) * e, gap: PIX.mode === 7 ? 0.12 : 0 }
+          else l.fx.pixel = { block: k === 0 ? -1 : SCANS[k - 1] * px, fine: SCANS[k] * px, split: top + (bot - top) * e, smooth: false }
+        } else {
+          // the soft focus: from about the finest pixels' size to sharp, easing out
+          const u = (k0 - scanned) / FOCUS_T
+          const b = SCANS[SCANS.length - 1] * px * 0.7 * (1 - u) ** 2
+          if (b > 1.1) l.fx.pixel = { block: b, smooth: true }
+        }
       }
     },
     over() {
       for (const l of letters) {
-        const t = p[l.i]
-        if (t >= 1) continue
-        label(`${Math.round(t * 48)} / 48 kB`, l.center().x, l.hy + l.oy + 0.2 * S, INK, 0.55, 10)
+        const i = l.i
+        if (t[i] < 0) continue
+        const k0 = Math.max(0, t[i] - WAIT)
+        const k = Math.min(SCANS.length, Math.floor(k0 / SCAN_T) + 1)
+        const done = k0 >= SCANS.length * SCAN_T
+        label(done ? 'decoding…' : `scan ${k}/${SCANS.length}`, l.center().x, l.hy + l.oy + 0.22 * S, INK, 0.55, 10)
       }
     },
   }

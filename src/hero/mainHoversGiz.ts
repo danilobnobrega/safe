@@ -2,6 +2,7 @@
 // look all the time — 3D extruded glyphs (GizLetters.ts) following the 2D engine, every font as TTF;
 // the hovers that drew the letter themselves are redone for 3D (HoverLabGiz.ts)
 import { startHoverLab } from './HoverLab'
-import { GIZ_SET } from './HoverLabGiz'
+import { CUBOS_SET } from './HoverLabFun'
 
-void startHoverLab(GIZ_SET, { giz3d: true })
+// the same hovers Danilo picked for /hero-hovers-cubos.html (2026-10-18)
+void startHoverLab(CUBOS_SET, { giz3d: true })
