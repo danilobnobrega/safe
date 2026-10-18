@@ -49,7 +49,8 @@ export class LetterSwap {
 
   private base: string
 
-  /** `set`: the folder under public/hero/ (letters = Danilo's materials; letters_v1 = the first set) */
+  /** `set`: the folder under public/hero/ (letters = Danilo's materials; letters_v1 = the first set);
+   *  'blank' (/hero-hovers-buracos.html): no photos — the holes show only the backdrop */
   constructor(set = 'letters') {
     this.base = `${ROOT}${set}/`
     // start mixed too: no two neighbours on the same photo
@@ -59,7 +60,7 @@ export class LetterSwap {
     this.texture.colorSpace = THREE.NoColorSpace
     this.texture.minFilter = this.texture.magFilter = THREE.LinearFilter
     this.texture.generateMipmaps = false
-    void this.load()
+    if (set !== 'blank') void this.load()
   }
 
   private async load(): Promise<void> {

@@ -16,6 +16,7 @@ import { realMaterial } from './ObjectLook'
 import { PaperDesk } from '../behind/PaperDesk'
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
 import { LetterSwap, type Slot } from './LetterSwap'
+import { setCursor } from '../ui/cursor'
 
 const LOCKUP_FRACTION_DESKTOP = 0.82
 const LOCKUP_FRACTION_MOBILE = 0.92
@@ -391,6 +392,59 @@ export class ShaderHero {
   private matNextSwitch = 1.4
   private raycaster = new THREE.Raycaster()
   private signMeshes: THREE.Mesh[] = []
+  // TEST (/hero-hovers-cubos.html): the hover lab's 3D letters (GizLetters.ts) stand in for "GENERIC."
+  // while the doors are shut; the hero's own one-piece sign comes back the moment they move
+  private signLab = false
+  private noReveal = false
+  private weAreHigh = false // "We are" still, but at the height the dodging one sits (the main page's)
+  private wordMeshes: THREE.Mesh[] = [] // "GENERIC." (and the still "We are", which the lab draws too)
+  /** where the sign sits at rest, for the lab: font size (px), baseline and pen origin (px, the
+   *  visible frame), and the letters' front plane (world z) */
+  labFrame: { S: number; base: number; left: number; frontZ: number; weLeft: number; weBase: number; we: { x: number; y: number; z: number; k: number } | null } | null = null
+  /** (lab) the paper as an image instead of the drawn one */
+  setPaper(c: HTMLCanvasElement): void {
+    let t = this.doorMat.uniforms.uLabPaper.value as THREE.CanvasTexture | null
+    if (!t || t.image !== c) {
+      t?.dispose()
+      t = new THREE.CanvasTexture(c)
+      t.colorSpace = THREE.NoColorSpace // display values, as the shader writes them
+      t.minFilter = t.magFilter = THREE.LinearFilter
+      t.generateMipmaps = false
+      this.doorMat.uniforms.uLabPaper.value = t
+    }
+    t.needsUpdate = true
+    this.doorMat.uniforms.uHasLabPaper.value = 1
+  }
+  /** (lab) the halves of "GENERIC." and the still "We are": they turn with the cubes */
+  labWordMeshes(): THREE.Mesh[] {
+    return this.wordMeshes
+  }
+  /** (lab) the two leaves' letter groups and the view at the doors (world units) */
+  labLeaves(): { L: THREE.Group; R: THREE.Group; vw: number; vh: number } {
+    const vh = 2 * DOOR_CAM_Z * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))
+    return { L: this.lettersL, R: this.lettersR, vw: vh * (this.W / this.H), vh }
+  }
+  /** the doors haven't visibly moved */
+  labDoorsShut = true
+  /** extra drawn objects (in the outline pass) */
+  labRoots: THREE.Object3D[] = []
+  beforeDoorRender?: () => void
+  afterDoorRender?: () => void
+  labHost(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; cam: THREE.PerspectiveCamera; drawn: Drawn; dpr: number; camZ: number; reveal?: { glsl: string; uniforms: Record<string, THREE.IUniform>; restOn: THREE.IUniform; restVP: THREE.IUniform } } {
+    return {
+      renderer: this.renderer,
+      scene: this.doorScene,
+      cam: this.doorCam,
+      drawn: this.drawn!,
+      dpr: this.dpr,
+      camZ: DOOR_CAM_Z,
+      // the cursor's holes cut the lab's letters too (unless this page has none)
+      reveal: this.noReveal ? undefined : { glsl: REVEAL_GLSL, uniforms: this.reveal.uniforms as unknown as Record<string, THREE.IUniform>, restOn: this.restOn, restVP: this.restVP },
+    }
+  }
+  setWordVisible(v: boolean): void {
+    for (const m of this.wordMeshes) m.visible = v
+  }
   private overSign = false
   private _splatPoint = new THREE.Vector2()
   private _splatDir = new THREE.Vector2()
@@ -445,7 +499,7 @@ export class ShaderHero {
   private approachBg?: THREE.Mesh
   private approachBgMat?: THREE.ShaderMaterial
 
-  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number; tunnelReveal?: boolean; behind?: 'paper'; paperDirect?: boolean; paperPose?: number[]; secretObjects?: { name: string; x: number; y: number; size: number; rot?: number }[] } = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number; tunnelReveal?: boolean; behind?: 'paper'; paperDirect?: boolean; paperPose?: number[]; scrollAfter?: boolean; signLab?: boolean; noReveal?: boolean; weAreHigh?: boolean; secretObjects?: { name: string; x: number; y: number; size: number; rot?: number }[] } = {}) {
     this.canvas = canvas
     // Size to the canvas's own laid-out box — and pass the RAW fractional size to
     // setSize. Rounding it here makes the backing store a pixel short of the box,
@@ -523,6 +577,9 @@ export class ShaderHero {
     }
     if (this.tunnelFeatured) this.textsDone = false // the wormhole waits for the last one
     this.paperDirect = !!opts.paperDirect
+    // TEST (/hero-sem-mesa.html): no desk — the scroll turns the cubes until they lock on "We do things
+    // for people", and from there the page scrolls on, normally, the hero going up like any section
+    this.scrollAfter = !!opts.scrollAfter
     if (opts.behind === 'paper' && this.drawn) {
       this.paper = new PaperDesk(this.renderer, this.drawn, () => ({ w: this.W, h: this.H }), opts.paperPose)
       // a ball in the bin: the dive ends in its dark — the wormhole to the next page opens there
@@ -546,6 +603,9 @@ export class ShaderHero {
     }
     if (opts.tunnelObjects) this.tunnelObjs = new TunnelObjects(opts.tunnelObjects, this.drawnU as unknown as Record<string, THREE.IUniform>, this.renderer, opts.tunnelSet, opts.tunnelReveal ? (this.reveal.uniforms as unknown as Record<string, THREE.IUniform>) : undefined)
     this.weAreDodge = !!opts.weAreDodge
+    this.signLab = !!opts.signLab
+    this.weAreHigh = !!opts.weAreHigh
+    this.noReveal = !!opts.noReveal
     this.sign = opts.sign ?? 'classic'
     this.wormTo = opts.wormTo
     this.wormPrefetch = opts.wormPrefetch ?? []
@@ -579,6 +639,8 @@ export class ShaderHero {
         uRestModel: { value: new THREE.Matrix4() },
         ...this.reveal.uniforms, // shared objects — updated once, seen by the letters too
         ...this.drawnU,
+        uLabPaper: { value: null as THREE.Texture | null },
+        uHasLabPaper: { value: 0 },
       },
       vertexShader: `
         precision highp float;
@@ -614,6 +676,8 @@ export class ShaderHero {
         varying vec4 vClip;
         varying vec4 vRestClip;
         uniform float uRestOn;
+        uniform sampler2D uLabPaper; // (/hero-hovers-cubos) the lab's paper, an image on screen
+        uniform float uHasLabPaper;
         ${REVEAL_GLSL}
         ${DRAWN_GLSL}
         varying vec3 vViewN;
@@ -626,7 +690,8 @@ export class ShaderHero {
             float shade = vKind < 0.5 ? uPhase : vKind < 1.5 ? 1.0 - uPhaseB : uPhase * 0.76;
             // the cubes' shade: a smooth graphite smudge, no hatching — any hatch pattern over a face
             // this big redraws or slides as it turns, and the whole surface seems to change
-            vec3 col = mix(drawnPaper(dsuv), D_INK, smoothstep(0.1, 1.0, shade) * 0.55);
+            vec3 paperC = uHasLabPaper > 0.5 ? texture2D(uLabPaper, dsuv).rgb : drawnPaper(dsuv);
+            vec3 col = mix(paperC, D_INK, smoothstep(0.1, 1.0, shade) * 0.55);
             col = mix(col, D_INK, drawnEdge(dsuv));
             if (vKind < 0.5) {
               vec2 suv = (vClip.xy / vClip.w) * 0.5 + 0.5;
@@ -687,6 +752,7 @@ export class ShaderHero {
     this.leftHinge.add(this.lettersL)
     this.rightHinge.add(this.lettersR)
     this.doorScene.add(this.leftHinge, this.rightHinge)
+    const buildT0 = performance.now()
     this.buildSpaceBehind()
     this.buildDoors()
     this.buildGallery()
@@ -707,9 +773,15 @@ export class ShaderHero {
     this.crumbs.layout(this.W / this.H)
 
     this.clearTargets()
-    this.bakeWormhole()
-    this.buildBeyondTunnel()
-    this.buildApproach()
+    // the wormhole, the chapter tunnel and the approach to it: only where the hero goes on into them.
+    // Under the desk (/, behind: 'paper') it never does — the bin's dive leaves for the garage — and
+    // the wormhole's galaxy bake alone took ~0.45 s of the first load (measured 2026-10-16)
+    if ((!this.paper && !this.scrollAfter) || location.search.includes('forcetunnel')) {
+      this.bakeWormhole()
+      this.buildBeyondTunnel()
+      this.buildApproach()
+    }
+    this.buildMs = performance.now() - buildT0
     void this.loadFonts().then(() => this.layoutLetters())
 
     window.addEventListener('pointermove', this.onPointerMove)
@@ -724,7 +796,10 @@ export class ShaderHero {
     window.addEventListener('keydown', this.onKey)
 
     this.renderer.setAnimationLoop(this.frame)
+    // (debug ?heroinfo) what the GPU is holding, and how long the build took
+    if (location.search.includes('heroinfo')) (window as unknown as { __heroInfo: () => unknown }).__heroInfo = () => ({ ...this.renderer.info.memory, programs: this.renderer.info.programs?.length, buildMs: this.buildMs, manual: this.manual, progress: this.progress, target: this.progressTarget, locked: this.locked, clear: this.crumbs.clear, released: this.released })
   }
+  private buildMs = 0
 
   // ---- doors ------------------------------------------------------
   private buildDoors(): void {
@@ -1879,7 +1954,7 @@ export class ShaderHero {
     if (this.hovered) swap(this.hovered, false)
     if (hit) swap(hit, true)
     this.hovered = hit
-    document.body.style.cursor = hit ? 'pointer' : ''
+    setCursor('hero-tunnel', hit ? 'pointer' : '')
   }
 
   /** the hidden terrain's life: it flows on its own and faster with the scroll; the cursor's
@@ -1935,7 +2010,7 @@ export class ShaderHero {
     }
     const want = this.down > 0.5 && (over || this.grabShown === 'grabbing') ? 'grabbing' : over ? 'grab' : ''
     if (want !== this.grabShown) {
-      document.body.style.cursor = want
+      setCursor('hero-crumbs', want)
       this.grabShown = want
     }
   }
@@ -2174,6 +2249,14 @@ export class ShaderHero {
     meshR.position.set(-vw / 2, yOff, zOff)
     this.lettersR.add(meshR)
     this.signMeshes.push(meshL, meshR)
+    this.wordMeshes = [meshL, meshR]
+    if (this.signLab) {
+      // at rest the lockup's ink centre sits on (0, yOff); TextGeometry's size is 0.72 em
+      const frontZ = zOff + depth + bevel
+      const upp = (2 * (DOOR_CAM_Z - frontZ) * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))) / this.H
+      this.labFrame = { S: size / 0.72 / upp, base: this.H / 2 - (yOff - centre.y) / upp, left: this.W / 2 - centre.x / upp, frontZ, weLeft: NaN, weBase: NaN, we: null }
+      this.setWordVisible(!this.labDoorsShut)
+    }
     this.pinRest(meshL)
     this.pinRest(meshR)
 
@@ -2185,7 +2268,7 @@ export class ShaderHero {
     weGeo.translate(-wb.min.x, -wb.min.y, 0)
     const weX = vw / 2 - halfW + size * 0.03
     // (dodging version sits a bit higher, clear of the G's top)
-    const weY = yOff + halfH + size * (this.weAreDodge ? 0.16 : 0.06)
+    const weY = yOff + halfH + size * (this.weAreDodge || this.weAreHigh ? 0.16 : 0.06)
     this.weLetters = []
     if (this.weAreDodge) {
       // one mesh per letter, laid out by the font's own advances (TextGeometry doesn't kern, so
@@ -2223,6 +2306,16 @@ export class ShaderHero {
       we.position.set(weX, weY, zOff)
       this.lettersL.add(we)
       this.signMeshes.push(we)
+      if (this.signLab && this.labFrame) {
+        // its pen origin at rest (the left leaf sits -vw/2 over), on the word's front plane
+        const upp = (2 * (DOOR_CAM_Z - this.labFrame.frontZ) * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))) / this.H
+        this.labFrame.weLeft = this.W / 2 + (weX - vw / 2 - wb.min.x) / upp
+        this.labFrame.weBase = this.H / 2 - (weY - wb.min.y) / upp
+        // and in the world: its pen origin and front face, and its scale per em (TextGeometry: 0.72)
+        this.labFrame.we = { x: weX - vw / 2 - wb.min.x, y: weY - wb.min.y, z: zOff + weSize * 0.16, k: size / 0.72 }
+        this.wordMeshes.push(we)
+        we.visible = !this.labDoorsShut
+      }
     }
 
     // tagline — on the cube's outer face, revealed once the cube has turned far enough
@@ -2441,9 +2534,10 @@ export class ShaderHero {
       const doorsShut = doorE <= DOORS_SHUT_E
       this.reveal.step(dt, this.target, this.pointerInside && (doorsShut || (this.tunnelReveal && this.gallery.visible)), this.W / this.H, 0)
     } else {
-      this.reveal.step(dt, this.target, this.pointerInside, this.W / this.H, THREE.MathUtils.clamp(P / REVEAL_FADE_P, 0, 1))
+      this.reveal.step(dt, this.target, this.pointerInside && !this.noReveal, this.W / this.H, THREE.MathUtils.clamp(P / REVEAL_FADE_P, 0, 1))
     }
 
+    this.labDoorsShut = doorE <= DOORS_SHUT_E
     this.letterSwap?.step(dt)
     if (this.weLetters.length) this.stepWeAre(dt, doorE <= DOORS_SHUT_E)
 
@@ -2480,7 +2574,11 @@ export class ShaderHero {
     } else this.secretDirty = true
     if (this.drawn && !pastDoors) {
       this.drawn.step(dt)
-      this.drawn.normalPass(this.doorScene, this.doorCam, [this.leftHinge, this.rightHinge, ...(this.drawnCrumbs ? [this.crumbs.stage] : []), ...this.weLetters.map((w) => w.mesh), ...(this.tunnelObjs?.look === 'drawn' ? this.tunnelItems : [])])
+      // (lab) its letters have their own outline pass: out of this one
+      const labHide = this.signLab ? this.wordMeshes.map((m) => [m, m.visible] as const) : []
+      for (const [m] of labHide) m.visible = false
+      this.drawn.normalPass(this.doorScene, this.doorCam, [this.leftHinge, this.rightHinge, ...this.labRoots, ...(this.drawnCrumbs ? [this.crumbs.stage] : []), ...this.weLetters.map((w) => w.mesh), ...(this.tunnelObjs?.look === 'drawn' ? this.tunnelItems : [])])
+      for (const [m, v] of labHide) m.visible = v
     }
     const wantRes = this.gallery.visible ? this.tunnelResScale : 1
     if (wantRes !== this.resScaleNow) {
@@ -2511,7 +2609,9 @@ export class ShaderHero {
     }
     if (this.tunnelReveal) this.renderRealTwins(dt)
     if (location.search.includes('realdbg')) for (const o of this.tunnelItems) o.visible = false
+    this.beforeDoorRender?.()
     this.renderer.render(this.doorScene, this.doorCam)
+    this.afterDoorRender?.()
     if (this.tunnelInst.length && this.gallery.visible) {
       this.objScene.fog = this.doorScene.fog
       this.renderer.autoClear = false
@@ -2536,8 +2636,8 @@ export class ShaderHero {
       this.stepTunnel(dt)
       return
     }
-    // (/hero-paper) no tunnel while the desk is up
-    if (this.paper && !this.behindDone) {
+    // (/hero-paper) no tunnel while the desk is up; (/hero-sem-mesa) none at all
+    if ((this.paper && !this.behindDone) || this.scrollAfter) {
       this.gallery.visible = false
       return
     }
@@ -2876,6 +2976,42 @@ export class ShaderHero {
 
   /** scroll is inert until the cookie banner is answered */
   private locked = true
+  private scrollAfter = false
+  private released = false // (scrollAfter) the page scrolling on, past the hero
+
+  /** (scrollAfter) the page takes over the scroll: the hero becomes the top of an ordinary page */
+  private release(): void {
+    this.released = true
+    const stage = this.canvas.parentElement
+    if (stage) {
+      // its height pinned to what it is now: let go of the window's bottom, it would have stretched to
+      // the whole page's height for a frame (a resize, a redraw: the flash before the scroll moved on)
+      stage.style.height = `${stage.getBoundingClientRect().height}px`
+      stage.style.bottom = 'auto'
+      stage.style.position = 'absolute'
+    }
+    // (the window scrolls, not the body: its fixed 100% height let it scroll inside itself instead)
+    for (const el of [document.documentElement, document.body]) {
+      el.style.height = 'auto'
+      el.style.overflow = 'visible'
+    }
+  }
+
+  /** (scrollAfter) back at the top, scrolling up: the hero holds the scroll again */
+  private hold(): void {
+    this.released = false
+    const stage = this.canvas.parentElement
+    if (stage) {
+      stage.style.position = ''
+      stage.style.height = ''
+      stage.style.bottom = ''
+    }
+    window.scrollTo(0, 0)
+    for (const el of [document.documentElement, document.body]) {
+      el.style.height = ''
+      el.style.overflow = ''
+    }
+  }
 
   /** called by the cookie banner once the visitor picks cookies or crackers */
   unlock(): void {
@@ -2925,6 +3061,17 @@ export class ShaderHero {
       else if (Math.abs(e.deltaY) > 4) this.notePulse()
       return
     }
+    if (this.scrollAfter) {
+      // past the hero the page scrolls itself; at its top, scrolling up gives the hero the scroll back
+      if (this.released) {
+        if (window.scrollY <= 0 && e.deltaY < 0) this.hold()
+        return
+      }
+      if (this.manual >= FREEZE_P - 1e-4 && e.deltaY > 0 && this.progress >= FREEZE_P - 0.01) return this.release()
+      this.manual = THREE.MathUtils.clamp(this.manual + e.deltaY / 2600, 0, FREEZE_P)
+      this.progressTarget = this.manual
+      return
+    }
     this.manual = THREE.MathUtils.clamp(this.manual + e.deltaY / 2600, 0, 1)
     this.progressTarget = this.manual
   }
@@ -2938,7 +3085,7 @@ export class ShaderHero {
   }
 
   private onScroll = (): void => {
-    if (this.locked) return
+    if (this.locked || this.scrollAfter) return
     const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight)
     this.progressTarget = THREE.MathUtils.clamp(Math.max(window.scrollY / max, this.manual), 0, 1)
   }

@@ -12,6 +12,7 @@ import { BallHits, HITS_ON, type Surface } from './BallHits'
 import { DiveSound } from './DiveSound'
 import { DrawerSound } from './DrawerSound'
 import { BinSound } from './BinSound'
+import { setCursor, setCursorTheme } from '../ui/cursor'
 import { Spring, flatten, deskReactor, pensReactor, binReactor, printerReactor, lampReactor, clockReactor, booksReactor, plantReactor, type Reactor } from './DeskReactions'
 
 /**
@@ -1150,6 +1151,7 @@ export class PaperDesk {
     if (this.shown) return
     this.shown = true
     this.direct = direct
+    setCursorTheme('chalk') // the desk is drawn in chalk on the dark
     window.addEventListener('pointermove', this.onMove)
     window.addEventListener('pointerdown', this.onDown)
     window.addEventListener('pointerup', this.onUp)
@@ -1809,7 +1811,7 @@ export class PaperDesk {
       else if (this.pick(this.pointer.x, this.pointer.y)) want = 'grab'
     }
     if (want !== this.cursor) {
-      document.body.style.cursor = want
+      setCursor('desk', want)
       this.cursor = want
     }
   }
@@ -1835,7 +1837,7 @@ export class PaperDesk {
     window.removeEventListener('pointerdown', this.onDown)
     window.removeEventListener('pointerup', this.onUp)
     window.removeEventListener('pointercancel', this.onUp)
-    document.body.style.cursor = ''
+    setCursor('desk', '')
   }
 }
 

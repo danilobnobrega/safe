@@ -139,6 +139,7 @@ export class PaperCrumple {
   }
 
   private fire(t: number, c: number, loud: number, hard: boolean): void {
+    if (location.search.includes('sfxlog')) ((window as unknown as { __sfx?: string[] }).__sfx ??= []).push(`crumple ${performance.now().toFixed(0)} c=${c.toFixed(2)} work=${this.work.toFixed(2)}`)
     const ctx = this.ctx!
     // brightness wanted: low and broad for a flat sheet, high and dry for a ball (a spread around it)
     const want = Math.min(1, Math.max(0, c * 0.85 + 0.08 + (Math.random() - 0.5) * 0.3))

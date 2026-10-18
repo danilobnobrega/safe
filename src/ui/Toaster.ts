@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { Drawn, DRAWN_GLSL } from '../hero/Drawn'
+import { setCursor, PRIORITY } from './cursor'
 
 /**
  * The menu: a tiny chrome toaster in the top-right corner, on every page. Click it: the lever
@@ -753,7 +754,7 @@ export class Toaster {
 
     this.pick3d()
     const overToaster = this.hit === this.body
-    document.documentElement.style.cursor = this.hit ? 'pointer' : ''
+    setCursor('toaster', this.hit ? 'pointer' : '', PRIORITY.menu)
 
     // lever: pressed while heating, springs back on pop
     const ly = BODY_H * (0.82 - this.leverY * 0.5)

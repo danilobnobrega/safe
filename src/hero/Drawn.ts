@@ -179,14 +179,14 @@ export class Drawn {
   }
 
   /** the outline pass: `roots` (and everything under them) are the drawn objects */
-  normalPass(scene: THREE.Scene, cam: THREE.Camera, roots: THREE.Object3D[]): void {
-    for (const r of roots) r.traverse((o) => o.layers.enable(DRAWN_LAYER))
+  normalPass(scene: THREE.Scene, cam: THREE.Camera, roots: THREE.Object3D[], layer = DRAWN_LAYER): void {
+    for (const r of roots) r.traverse((o) => o.layers.enable(layer))
     const mask = cam.layers.mask
     const bg = scene.background
     const fog = scene.fog
     const over = scene.overrideMaterial
     const shadows = this.renderer.shadowMap.autoUpdate
-    cam.layers.set(DRAWN_LAYER)
+    cam.layers.set(layer)
     scene.background = null
     scene.fog = null
     scene.overrideMaterial = this.normalMat

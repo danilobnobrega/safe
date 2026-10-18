@@ -49,6 +49,7 @@ export class BallHits {
 
   /** the ball hit `surface`: its speed changed by `dv` (m/s); `x` across the screen (-1..1), `dist` (m) from the camera */
   hit(surface: Surface, dv: number, x: number, dist: number): void {
+    if (location.search.includes('sfxlog')) ((window as unknown as { __sfx?: string[] }).__sfx ??= []).push(`hit ${performance.now().toFixed(0)} ${surface} ${dv.toFixed(2)}`)
     const { ctx, out } = sfx()
     const cuts = this.cuts[surface]
     if (!cuts?.length || ctx.state !== 'running') return

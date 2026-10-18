@@ -26,6 +26,8 @@ const hero = new ShaderHero(canvas, {
   // bank it into the bin ("about us"), and down into the garage. Made the main page 2026-10-12; the
   // tunnel version is /hero-tunnel-main.html
   behind: 'paper',
+  // the letters' photos: the first set (wool, ice cream, foam, fur, foil balloon, cellophane — Danilo, 2026-10-16)
+  letterSet: 'letters_v1',
 })
 mountCookieBanner(hero.crumbs, () => hero.unlock())
 mountMenu({ drawn: true, drawnToasts: 'hover', realisticToast: true })

@@ -20,6 +20,8 @@ const SETS: Record<string, string[]> = {
 const PICKED = (Q.get('drawer') ?? 'a').split(',').filter((k) => SETS[k])
 const SET = PICKED.length ? PICKED.flatMap((k) => SETS[k]) : null
 const V_FULL = 0.6 // m/s: a quick drawer
+// only the knocks: the slide read as paper crumpling (Danilo, 2026-10-16); ?drawerslide=on brings it back
+const NO_SLIDE = Q.get('drawerslide') !== 'on'
 const OUT_MAX = 0.09 // m: how far a drawer comes out (deskReactor)
 
 export type Knock = { buf: AudioBuffer; at: number; len: number; gain: number; weight: number }
@@ -76,7 +78,7 @@ export class DrawerSound {
         vo = this.voices[i] = { src, g, lp, pan }
       }
       const s = Math.min(1.2, Math.abs(v) / V_FULL)
-      vo.g.gain.setTargetAtTime(0.75 * Math.pow(s, 1.3), t, 0.02)
+      vo.g.gain.setTargetAtTime(NO_SLIDE ? 0 : 0.75 * Math.pow(s, 1.3), t, 0.02)
       vo.lp.frequency.setTargetAtTime(700 + 6500 * Math.min(1, s), t, 0.04)
       const sx = Number.isFinite(screenX[i]) ? screenX[i] : 0
       vo.pan.pan.setTargetAtTime(Math.max(-0.7, Math.min(0.7, sx * 0.7)), t, 0.1)
@@ -88,6 +90,7 @@ export class DrawerSound {
   }
 
   private knock(s: number, firm: boolean, x: number): void {
+    if (location.search.includes('sfxlog')) ((window as unknown as { __sfx?: string[] }).__sfx ??= []).push(`drawer-knock ${performance.now().toFixed(0)}`)
     const { ctx, out } = sfx()
     if (!this.knocks.length) return
     // firm (shutting): from the heavier half; light (end of run): the lighter half

@@ -1,0 +1,36 @@
+// TEST route (/hero-predio.html): the elevator with the garage as the BASEMENT — the desk's bin is the
+// building's rubbish chute down to it (see mountElevator's `basement`)
+import '../ui/soundToggle' // (first: it has to see every audio context made)
+import './hero.css'
+import { ShaderHero } from './ShaderHero'
+import { mountCookieBanner } from '../ui/cookieBanner'
+import { mountElevator } from '../ui/Elevator'
+
+// the hero, drawn by the garage's hand (won 2026-10-07; the test was /hero-drawn-giz-real.html, the
+// one before is /hero-classic.html): the sign, "We are" and the crumbs in graphite outline +
+// hatching on the paper (see Drawn.ts), the door cubes outlined; the cursor's holes show the
+// wordmark in other bodies, edged in chalk; the cursor pushes the crumbs (they stay chalk); the
+// toaster drawn, its slices drawn too, the one under the cursor turning into real toast. The fall
+// through the wormhole lands on the garage page (its files warmed while the fall plays)
+const canvas = document.querySelector<HTMLCanvasElement>('#webgl')
+if (!canvas) throw new Error('no #webgl canvas')
+const base = import.meta.env.BASE_URL
+const hero = new ShaderHero(canvas, {
+  crumbScale: 2,
+  revealLetters: true,
+  weAreDodge: true,
+  crumbPush: true,
+  sign: 'matte',
+  wormTo: `${base}garage-predio.html`,
+  wormPrefetch: ['garage.glb', 'photos.jpg', 'drawing.png', 'noise.png', 'concrete.png'].map((f) => `${base}garage/${f}`),
+  chalkEdge: true,
+  drawn: true,
+  // behind the cubes, the desk (src/behind/PaperDesk.ts): the hero was a sheet of paper — crumple it,
+  // bank it into the bin ("about us"), and down into the garage. Made the main page 2026-10-12; the
+  // tunnel version is /hero-tunnel-main.html
+  behind: 'paper',
+  // the letters' photos: the first set (wool, ice cream, foam, fur, foil balloon, cellophane — Danilo, 2026-10-16)
+  letterSet: 'letters_v1',
+})
+mountCookieBanner(hero.crumbs, () => hero.unlock())
+mountElevator('G', { basement: true })

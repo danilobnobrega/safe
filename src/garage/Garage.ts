@@ -13,6 +13,7 @@ import { FlexCard } from './FlexCard'
 import { Annotations, NOTE_EVERY } from './Annotations'
 import { Cards, type Quad } from './Cards'
 import { ScrollSnap } from './ScrollSnap'
+import { setCursor, setCursorTheme } from '../ui/cursor'
 
 // garage-focus: where the camera ends — facing him from beyond his monitor, raised so it looks
 // down over the screen: him and his computer both in frame
@@ -139,6 +140,7 @@ export class Garage {
     this.rolesScroll = !!opts.rolesScroll || !!opts.rolesColumn || !!opts.rolesCylinder
     this.rolesCylinder = !!opts.rolesCylinder
     registerChunks()
+    setCursorTheme('chalk')
     this.readSize()
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -605,7 +607,7 @@ export class Garage {
     u.uShadeRect.value.copy(f.shadeRect)
     u.uShade2.value += ((inspect.labelShown ? 1 : 0) - u.uShade2.value) * 0.2 // under the hover label
     u.uShadeRect2.value.copy(inspect.labelRect)
-    document.body.style.cursor = inspect.current || f.active ? 'pointer' : ''
+    setCursor('garage', inspect.current || f.active ? 'pointer' : '')
 
     // the beam's trail: the head always sits on the cursor; a new point is dropped whenever it
     // has moved far enough, and every point fades (~0.7 s)
