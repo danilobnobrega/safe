@@ -13,6 +13,11 @@ body {
   overflow: hidden;
 }
 
+/* (scrollAfter pages) once the hero lets go and the page scrolls on, no scrollbar: its showing up
+   narrowed the page by its width, the hero resized and showed one blank frame — the flash */
+html.page-scroll { scrollbar-width: none; }
+html.page-scroll::-webkit-scrollbar { display: none; }
+
 /* The canvas is extended OVERSCAN px above the viewport (top: -64) and that strip
    is clipped away. Chrome's compositor offsets the WebGL surface down from the
    element box by a few px on this machine (Intel + fractional Windows scaling);

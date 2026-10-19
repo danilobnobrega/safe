@@ -14,6 +14,7 @@ import { Drawn, DRAWN_GLSL } from './Drawn'
 import { TunnelObjects, WORLD_SCALE, PORTRAIT, SRC_MAT, REAL_HOLE, type TunnelLook, type TunnelSet } from './TunnelObjects'
 import { realMaterial } from './ObjectLook'
 import { PaperDesk } from '../behind/PaperDesk'
+import { CloudOverlay, CloudPuffs } from './CloudsAfter'
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
 import { LetterSwap, type Slot } from './LetterSwap'
 import { setCursor } from '../ui/cursor'
@@ -63,6 +64,7 @@ const DOORS_SHUT_E = 4e-4
 const CAM_DIVE_END = -17
 /** section 2 — the photo tunnel behind the doors (Floema's recipe) */
 const TUNNEL_ARM_P = 0.99 // turns on once the camera has punched fully past the cubes
+const CLOUD_SPAN = 0.5 // (cloudsAfter) the scroll through the clouds, after FREEZE_P (2600 px of wheel = 1)
 const TUNNEL_REVEAL_P = 0.55 // photos start appearing one at a time just before the zoom-in
 const TUNNEL_STAGGER = 0.085 // seconds between each photo's fade-in (random order)
 const TUNNEL_RADIUS = 10 // photos ride a circle of this radius around the forward axis
@@ -513,7 +515,7 @@ export class ShaderHero {
   private approachBg?: THREE.Mesh
   private approachBgMat?: THREE.ShaderMaterial
 
-  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number; tunnelReveal?: boolean; behind?: 'paper'; paperDirect?: boolean; paperPose?: number[]; scrollAfter?: boolean; signLab?: boolean; noReveal?: boolean; weAreHigh?: boolean; signPlace?: SignPlace; secretObjects?: { name: string; x: number; y: number; size: number; rot?: number }[] } = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: { crumbScale?: number; revealLetters?: boolean; weAreDodge?: boolean; crumbPush?: boolean; sign?: SignStyle; wormTo?: string; wormPrefetch?: string[]; chalkEdge?: boolean; chalkOrange?: boolean; drawn?: boolean; drawnCrumbs?: boolean; crumbReveal?: boolean; crumbPushHold?: boolean; crumbGrabCursor?: boolean; tunnelObjects?: TunnelLook; letterSet?: string; tunnelFeatured?: boolean; tunnelSet?: TunnelSet; tunnelResScale?: number; tunnelRandom?: boolean; tunnelPortrait?: string; tunnelHoverColor?: boolean; tunnelHidden?: 'abstract'; drawnScale?: number; drawnEvery?: number; tunnelReveal?: boolean; behind?: 'paper'; paperDirect?: boolean; paperPose?: number[]; scrollAfter?: boolean; cloudsAfter?: 'flat' | 'volume'; signLab?: boolean; noReveal?: boolean; weAreHigh?: boolean; signPlace?: SignPlace; secretObjects?: { name: string; x: number; y: number; size: number; rot?: number }[] } = {}) {
     this.canvas = canvas
     // Size to the canvas's own laid-out box — and pass the RAW fractional size to
     // setSize. Rounding it here makes the backing store a pixel short of the box,
@@ -594,6 +596,18 @@ export class ShaderHero {
     // TEST (/hero-sem-mesa.html): no desk — the scroll turns the cubes until they lock on "We do things
     // for people", and from there the page scrolls on, normally, the hero going up like any section
     this.scrollAfter = !!opts.scrollAfter
+    // TEST (/hero-nuvens-planas.html, /hero-nuvens-volume.html): past "We do things for people" the
+    // scroll runs on for CLOUD_SPAN more, the clouds coming up until all is paper — and only then
+    // does the page let go (see CloudsAfter.ts)
+    if (opts.cloudsAfter && this.scrollAfter) {
+      this.clouds = opts.cloudsAfter
+      const stage = this.canvas.parentElement
+      if (stage) this.cloudOverlay = new CloudOverlay(stage, OVERSCAN, this.clouds === 'flat')
+      if (this.clouds === 'volume' && this.drawn) {
+        this.puffs = new CloudPuffs(this.drawn)
+        this.doorScene.add(this.puffs.root)
+      }
+    }
     if (opts.behind === 'paper' && this.drawn) {
       this.paper = new PaperDesk(this.renderer, this.drawn, () => ({ w: this.W, h: this.H }), opts.paperPose)
       // a ball in the bin: the dive ends in its dark — the wormhole to the next page opens there
@@ -2416,6 +2430,8 @@ export class ShaderHero {
   // ---- loop -------------------------------------------------------
   private frame = (): void => {
     const dt = Math.min(this.clock.getDelta(), 0.05)
+    // (scrollAfter) the page has scrolled the hero out of view: nothing to draw until it's back
+    if (this.released && this.canvas.getBoundingClientRect().bottom <= 0) return
 
     this.pointer.lerp(this.target, 0.35)
     this.active += ((this.hasFocus() ? 1 : 0) - this.active) * 0.12
@@ -2457,7 +2473,9 @@ export class ShaderHero {
       const k = Math.min(1, (1 - Math.pow(0.003, dt)) + Math.min(0.55, Math.abs(gap) * 4))
       this.progress += gap * k
     }
-    const P = this.progress
+    // (cloudsAfter) past FREEZE_P the scroll drives the clouds, the cubes stay locked
+    const P = this.clouds ? Math.min(this.progress, FREEZE_P) : this.progress
+    this.cloudP = this.clouds ? THREE.MathUtils.clamp((this.progress - FREEZE_P) / CLOUD_SPAN, 0, 1) : 0
     const vh = 2 * DOOR_CAM_Z * Math.tan(THREE.MathUtils.degToRad(DOOR_FOV / 2))
     const vw = vh * (this.W / this.H)
 
@@ -2514,7 +2532,21 @@ export class ShaderHero {
     const camZ = THREE.MathUtils.lerp(DOOR_CAM_Z, -4, d1 * (2 - d1)) + Math.pow(d2, 2.2) * (CAM_DIVE_END + 4)
     this.doorCam.position.z = camZ
     this._look.set(0, 0, camZ - 10) // always straight ahead
+    if (this.puffs) {
+      // (cloudsAfter 'volume') the deck rises and the camera sinks forward into it
+      this.puffs.step(this.cloudP)
+      // forward into the deck, level: it rises past the camera, never seen from underneath
+      const s = this.cloudP * this.cloudP * (3 - 2 * this.cloudP)
+      this.doorCam.position.set(0, 0, camZ - 3 * s)
+      this._look.set(0, -1.2 * s, camZ - 3 * s - 10)
+    }
     this.doorCam.lookAt(this._look)
+    // (cloudsAfter 'flat') the hero softens as the clouds come over it, as white-desert's title does
+    if (this.clouds === 'flat') {
+      const b = Math.min(1, this.cloudP / 0.7) * 6
+      const f = b > 0.05 ? `blur(${b.toFixed(2)}px)` : ''
+      if (this.canvas.style.filter !== f) this.canvas.style.filter = f
+    }
 
     // is the cursor actually over the wordmark? A real raycast against the letter
     // meshes, not the page-wide pointerInside flag — see the field comments above.
@@ -2591,7 +2623,7 @@ export class ShaderHero {
     // past the cubes (the camera has punched through them into the tunnel) nothing of the hero is
     // in view: skip what only it needed — the cubes' shadow maps (two scene renders a frame) and
     // the drawn outline pass — and stop updating the hinges. The main thread was busy all frame
-    const pastDoors = this.progress >= TUNNEL_ARM_P
+    const pastDoors = P >= TUNNEL_ARM_P
     this.renderer.shadowMap.autoUpdate = !pastDoors
     this.leftHinge.visible = this.rightHinge.visible = !pastDoors
     if (this.drawn && pastDoors && this.secretCam) {
@@ -2609,7 +2641,7 @@ export class ShaderHero {
       // (lab) its letters have their own outline pass: out of this one
       const labHide = this.signLab ? this.wordMeshes.map((m) => [m, m.visible] as const) : []
       for (const [m] of labHide) m.visible = false
-      this.drawn.normalPass(this.doorScene, this.doorCam, [this.leftHinge, this.rightHinge, ...this.labRoots, ...(this.drawnCrumbs ? [this.crumbs.stage] : []), ...this.weLetters.map((w) => w.mesh), ...(this.tunnelObjs?.look === 'drawn' ? this.tunnelItems : [])])
+      this.drawn.normalPass(this.doorScene, this.doorCam, [this.leftHinge, this.rightHinge, ...this.labRoots, ...(this.drawnCrumbs ? [this.crumbs.stage] : []), ...this.weLetters.map((w) => w.mesh), ...(this.tunnelObjs?.look === 'drawn' ? this.tunnelItems : []), ...(this.puffs ? [this.puffs.root] : [])])
       for (const [m, v] of labHide) m.visible = v
     }
     const wantRes = this.gallery.visible ? this.tunnelResScale : 1
@@ -2644,6 +2676,7 @@ export class ShaderHero {
     this.beforeDoorRender?.()
     this.renderer.render(this.doorScene, this.doorCam)
     this.afterDoorRender?.()
+    this.cloudOverlay?.render(dt, this.cloudP)
     if (this.tunnelInst.length && this.gallery.visible) {
       this.objScene.fog = this.doorScene.fog
       this.renderer.autoClear = false
@@ -3010,6 +3043,11 @@ export class ShaderHero {
   private locked = true
   private scrollAfter = false
   private released = false // (scrollAfter) the page scrolling on, past the hero
+  // (cloudsAfter) the clouds between the cubes and the page: cloudP 0..1 over CLOUD_SPAN of scroll
+  private clouds?: 'flat' | 'volume'
+  private cloudP = 0
+  private cloudOverlay?: CloudOverlay
+  private puffs?: CloudPuffs
 
   /** (scrollAfter) the page takes over the scroll: the hero becomes the top of an ordinary page */
   private release(): void {
@@ -3022,6 +3060,8 @@ export class ShaderHero {
       stage.style.bottom = 'auto'
       stage.style.position = 'absolute'
     }
+    // no scrollbar (hero.css): it would narrow the page, and the hero's resize showed a blank frame
+    document.documentElement.classList.add('page-scroll')
     // (the window scrolls, not the body: its fixed 100% height let it scroll inside itself instead)
     for (const el of [document.documentElement, document.body]) {
       el.style.height = 'auto'
@@ -3039,6 +3079,7 @@ export class ShaderHero {
       stage.style.bottom = ''
     }
     window.scrollTo(0, 0)
+    document.documentElement.classList.remove('page-scroll')
     for (const el of [document.documentElement, document.body]) {
       el.style.height = ''
       el.style.overflow = ''
@@ -3083,7 +3124,7 @@ export class ShaderHero {
   private onWheel = (e: WheelEvent): void => {
     if (this.locked || this.inWormhole) return
     if (this.paperOn && !this.behindDone) return
-    if (this.manual >= 1) {
+    if (this.manual >= 1 && !this.scrollAfter) {
       if (this.paper && !this.behindDone) return
       // hero scroll is spent — every flick (either direction) feeds the tunnel speed
       // AND charges the wormhole; decays fast, so the RATE of flicking sets both.
@@ -3099,8 +3140,10 @@ export class ShaderHero {
         if (window.scrollY <= 0 && e.deltaY < 0) this.hold()
         return
       }
-      if (this.manual >= FREEZE_P - 1e-4 && e.deltaY > 0 && this.progress >= FREEZE_P - 0.01) return this.release()
-      this.manual = THREE.MathUtils.clamp(this.manual + e.deltaY / 2600, 0, FREEZE_P)
+      // (cloudsAfter) the scroll runs on past the cubes through the clouds, and lets go at all-paper
+      const cap = FREEZE_P + (this.clouds ? CLOUD_SPAN : 0)
+      if (this.manual >= cap - 1e-4 && e.deltaY > 0 && this.progress >= cap - 0.01) return this.release()
+      this.manual = THREE.MathUtils.clamp(this.manual + e.deltaY / 2600, 0, cap)
       this.progressTarget = this.manual
       return
     }
